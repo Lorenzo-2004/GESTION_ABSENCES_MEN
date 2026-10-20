@@ -1,0 +1,112 @@
+@startuml usecase
+left to right direction
+
+skinparam backgroundColor #FFFFFF
+skinparam dpi 300
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+
+skinparam packageStyle rectangle
+skinparam package {
+  BorderColor #4A5568
+  FontColor #1A202C
+  FontStyle bold
+}
+
+skinparam actor {
+  BorderColor #2D3748
+  BackgroundColor #EDF2F7
+}
+
+skinparam usecase {
+  BackgroundColor #F7FAFC
+  BorderColor #4A5568
+  ArrowColor #2B6CB0
+}
+
+actor "Agent / Employé\n(Fonctionnaire / ECD / Stagiaire)" as Agent
+actor "Chef de Service" as Chef
+actor "Directeur" as Directeur
+actor "Ressources Humaines\n(RH Direction)" as RH
+actor "Administrateur\nSystème" as Admin
+
+rectangle "Application de gestion des congés et des absences (MEN)" {
+
+  package "Authentification & Profil" {
+    usecase "Se connecter / Se déconnecter\n(JWT)" as UC_Auth
+    usecase "Consulter ses soldes\n& historiques" as UC_Solde
+  }
+
+  package "Gestion des Demandes & Absences" {
+    usecase "Contrôler statut Stagiaire &\nVérifier Décision RH (Congé Annuel)" as UC_CheckRules
+    usecase "Saisir une demande d'absence\n(Restriction Stagiaire & Autofill IM)" as UC_SaisieAgent
+    usecase "Téléverser une pièce justificative\n(OM, Certificat, Acte)" as UC_Upload
+    usecase "Saisir une demande pour soi-même\n(Chef de Service)" as UC_SaisieChef_Self
+    usecase "Saisir une demande déléguée\npour un agent (Combobox)" as UC_SaisieChef_Delegated
+    usecase "Générer & Télécharger le\nformulaire PDF pré-rempli" as UC_GenPDF
+    usecase "Consulter le Planning\nd'Équipe" as UC_Planning
+  }
+
+  package "Circuit de Validation & Visa" {
+    usecase "Évaluer une demande d'absence\n(Observation/Visa)" as UC_VisaFaveur
+    usecase "Apposer Avis & Signature\n(Absence d'un Agent)" as UC_SignChef
+    usecase "Valider & Signer demande directe\nd'un Chef de Service [RG-10]" as UC_SignDir_Chef
+    usecase "Valider définitivement & Signer\n(Absence Agent)" as UC_SignDir
+  }
+
+  package "Gestion RH des Décisions (Congé Annuel)" {
+    usecase "Scanner & Traiter par OCR\nune Décision de Congé" as UC_ScanOCR
+    usecase "Valider & Activer la Décision\nde Congé (Espace RH)" as UC_ValiderDecision
+    usecase "Consulter l'historique des\nDécisions par Personnel" as UC_ListDecision
+  }
+
+  package "Administration & Paramétrage" {
+    usecase "Gérer les utilisateurs\n(IM, Rôles, Statuts, Comptes)" as UC_ManageUsers
+    usecase "Gérer la structure\n(Directions & Services)" as UC_ManageStructure
+  }
+}
+
+' Relations Acteurs
+Agent ---> UC_Auth
+Agent ---> UC_Solde
+Agent ---> UC_SaisieAgent
+Agent ---> UC_GenPDF
+Agent ---> UC_Planning
+
+Chef ---> UC_Auth
+Chef ---> UC_Solde
+Chef ---> UC_SaisieChef_Self
+Chef ---> UC_SaisieChef_Delegated
+Chef ---> UC_VisaFaveur
+Chef ---> UC_SignChef
+Chef ---> UC_Planning
+
+Directeur ---> UC_Auth
+Directeur ---> UC_SignDir
+Directeur ---> UC_SignDir_Chef
+Directeur ---> UC_Planning
+
+RH ---> UC_Auth
+RH ---> UC_ScanOCR
+RH ---> UC_ValiderDecision
+RH ---> UC_ListDecision
+RH ---> UC_Planning
+
+Admin ---> UC_Auth
+Admin ---> UC_ManageUsers
+Admin ---> UC_ManageStructure
+
+' Includes & Extends
+UC_SaisieAgent ..> UC_GenPDF : <<include>>
+UC_SaisieChef_Self ..> UC_GenPDF : <<include>>
+UC_SaisieChef_Delegated ..> UC_GenPDF : <<include>>
+
+' Le téléversement d'un justificatif étend la saisie selon le type d'absence
+UC_SaisieAgent <.. UC_Upload : <<extend>>
+
+' Contrôle d'éligibilité (Interdiction congé annuel pour stagiaires + Vérification décision RH)
+UC_SaisieAgent ..> UC_CheckRules : <<include>>
+
+UC_ValiderDecision ..> UC_ScanOCR : <<include>>
+
+@enduml

@@ -1,0 +1,54 @@
+@startuml etat_transition_demande
+skinparam state {
+  StartColor #2B6CB0
+  EndColor #2D3748
+  BackgroundColor #F7FAFC
+  BorderColor #4A5568
+  FontName Arial
+}
+
+[*] --> VerificationStatut : L'agent soumet sa demande
+
+state VerificationStatut <<choice>>
+VerificationStatut --> BloqueeStag : statut == STAGIAIRE ET type_absence == CONGE_ANNUEL
+VerificationStatut --> VerificationType : Autre cas (Fonctionnaire / ECD ou autre type d'absence)
+
+BloqueeStag : Message "Les stagiaires n'ont pas droit au congé annuel"
+BloqueeStag --> [*] : Transaction rejetée
+
+state VerificationType <<choice>>
+VerificationType --> VerificationDecision : type_absence == CONGE_ANNUEL
+VerificationType --> EN_ATTENTE : Permission, Autorisation, Mission, Maladie...
+
+state VerificationDecision <<choice>>
+VerificationDecision --> BloqueeRH : Aucune décision RH enregistrée / valide
+VerificationDecision --> EN_ATTENTE : Décision RH valide (id_demande créé)
+
+BloqueeRH --> [*] : Transaction annulée par le système
+
+state EN_ATTENTE : Attente du visa du Chef de Service
+EN_ATTENTE --> REJETE : Avis défavorable (Chef de Service)
+EN_ATTENTE --> APPROUVE_CS : Avis favorable (Chef de Service)
+EN_ATTENTE --> VALIDE_DIR : Soumission directe d'un Chef de Service [RG-10]
+
+state APPROUVE_CS : Attente de validation par le Directeur
+APPROUVE_CS --> REJETE : Refus définitif (Directeur)
+APPROUVE_CS --> VALIDE_DIR : Accord définitif (Directeur)
+
+state VALIDE_DIR : Demande Approuvée
+state VALIDE_DIR {
+  [*] --> TraitementSolde
+  state TraitementSolde <<choice>>
+  TraitementSolde --> DecompteSolde : type_absence == CONGE_ANNUEL (Fonctionnaire/ECD)
+  TraitementSolde --> SansDecompte : Autre type d'absence ou Stagiaire
+  
+  DecompteSolde : Déduction des jours du quota (30j)
+  SansDecompte : Aucun décompte du quota
+}
+
+VALIDE_DIR --> ARCHIVEE : Archivage automatique en fin d'année
+
+REJETE --> [*] : Fin du traitement
+ARCHIVEE --> [*] : Clôture du dossier
+
+@enduml

@@ -1,0 +1,78 @@
+@startuml sequence_circuit_validation
+autonumber
+skinparam style strictuml
+skinparam sequenceMessageScale 1.0
+skinparam boxPadding 10
+skinparam participantPadding 10
+
+actor "Chef de Service" as Chef
+actor "Directeur" as Directeur
+participant "Interface React\n(Frontend)" as Front
+participant "API Django\n(Backend)" as API
+database "PostgreSQL\n(BDD)" as BDD
+
+' ==========================================
+' ÉTAPE 1 : VISA / AVIS DU CHEF DE SERVICE
+' ==========================================
+group Étape 1 : Avis du Chef de Service (Agents du service)
+    Chef -> Front : Consulte la liste des demandes en attente
+    Front -> API : GET /api/demandes/en-attente-service/
+    API -> BDD : SELECT * FROM demandes_absence WHERE id_service=Chef.id_service AND statut='EN_ATTENTE'
+    BDD --> API : Liste des demandes
+    API --> Front : JSON (Demandes du service)
+    
+    Chef -> Front : Sélectionne une demande et émet un avis (Favorable / Défavorable)
+    Front -> API : POST /api/validations/ (id_demande, avis, observation)
+    activate API
+    
+    API -> BDD : INSERT INTO validations_workflow (niveau='CHEF_SERVICE', avis, observation)
+    
+    alt Avis Défavorable
+        API -> BDD : UPDATE demandes_absence SET statut='REJETE'
+        BDD --> API : Statut mis à jour
+        API --> Front : 200 OK (Demande rejetée)
+    else Avis Favorable
+        API -> BDD : UPDATE demandes_absence SET statut='APPROUVE_CS'
+        BDD --> API : Statut mis à jour
+        API --> Front : 200 OK (Transmis au Directeur)
+    end
+    deactivate API
+end
+
+' ==========================================
+' ÉTAPE 2 : VALIDATION DÉFINITIVE PAR LE DIRECTEUR
+' ==========================================
+group Étape 2 : Décision finale du Directeur (Demandes validées ou directes [RG-10])
+    Directeur -> Front : Consulte le tableau de bord des demandes à signer
+    Front -> API : GET /api/demandes/en-attente-direction/
+    API -> BDD : SELECT * FROM demandes_absence WHERE statut='APPROUVE_CS' OR (statut='EN_ATTENTE' AND id_personnel.poste='CHEF_SERVICE')
+    BDD --> API : Liste des demandes à valider
+    API --> Front : JSON (Demandes visées et demandes directes)
+    
+    Directeur -> Front : Valide définitivement la demande (Favorable / Refus)
+    Front -> API : POST /api/validations/ (id_demande, niveau='DIRECTEUR', avis)
+    activate API
+    
+    alt Décision Défavorable (Refus)
+        API -> BDD : INSERT INTO validations_workflow (niveau='DIRECTEUR', avis='DEFAVORABLE')
+        API -> BDD : UPDATE demandes_absence SET statut='REJETE'
+        BDD --> API : Statut mis à jour
+        API --> Front : 200 OK (Demande rejetée par le Directeur)
+    else Décision Favorable
+        API -> BDD : INSERT INTO validations_workflow (niveau='DIRECTEUR', avis='FAVORABLE')
+        API -> BDD : UPDATE demandes_absence SET statut='VALIDE_DIR'
+        
+        ' Condition de mise à jour du solde : Uniquement pour Congé Annuel ET Agent non Stagiaire
+        opt type_absence == 'CONGE_ANNUEL' AND statut_agent != 'STAGIAIRE'
+            API -> BDD : UPDATE soldes_conge SET jours_pris = jours_pris + nb_jours, solde_restant = solde_restant - nb_jours WHERE id_personnel=Agent AND annee=annee_courante
+            BDD --> API : Solde mis à jour
+        end
+        
+        API --> Front : 200 OK (Absence validée définitivement)
+    end
+    
+    deactivate API
+    Front --> Directeur : Confirmation de la décision
+end
+
+@enduml

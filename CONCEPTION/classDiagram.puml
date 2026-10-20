@@ -1,0 +1,128 @@
+@startuml Diagramme_de_Classes_MEN
+
+skinparam classAttributeIconSize 0
+skinparam monochrome false
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+class Direction {
+  + id_direction : BigAuto {PK}
+  + code_direction : String
+  + nom_direction : String
+  --
+  + get_personnels()
+  + get_services()
+}
+
+class Service {
+  + id_service : BigAuto {PK}
+  + code_service : String
+  + nom_service : String
+  + id_direction : BigAuto {FK}
+  --
+  + get_personnels()
+}
+
+class Personnel {
+  + id_personnel : BigAuto {PK}
+  + im : String {Unique}
+  + cin : String {Unique}
+  + id_direction : BigAuto {FK}
+  + id_service : BigAuto {FK, Nullable}
+  + nom : String
+  + prenoms : String
+  + sexe : String
+  + date_naissance : Date
+  + telephone : String
+  + email : String
+  + statut : String
+  + corps : String
+  + grade : String
+  + check_presence : Boolean
+  --
+  + get_solde_actif()
+  + verifier_decision_annuelle()
+}
+
+class SoldeConge {
+  + id_solde : BigAuto {PK}
+  + id_personnel : BigAuto {FK}
+  + annee : Integer
+  + droit_annuel : Integer = 30
+  + jours_pris : Integer = 0
+  + solde_restant : Integer
+  --
+  + calculer_solde_restant()
+  + deduire_jours(nb_jours : Integer)
+}
+
+class DemandeAbsence {
+  + id_demande : BigAuto {PK}
+  + numero_enregistrement : String {Unique}
+  + id_personnel : BigAuto {FK}
+  + type_absence : Enum
+  + motif : Text
+  + date_debut : Date
+  + date_fin : Date
+  + nombre_jours : Integer
+  + lieu_jouissance : String
+  + fichier_justificatif : String {Nullable}
+  + statut_demande : Enum
+  + date_creation : DateTime
+  --
+  + soumettre_demande()
+  + joindre_justificatif()
+  + generer_pdf_formulaire()
+}
+
+class ValidationWorkflow {
+  + id_validation : BigAuto {PK}
+  + id_demande : BigAuto {FK}
+  + id_valideur : BigAuto {FK}
+  + niveau : Enum
+  + avis : Enum
+  + observation : Text
+  + date_action : DateTime
+  --
+  + enregistrer_avis()
+}
+
+class DecisionConge {
+  + id_decision : BigAuto {PK}
+  + numero_decision : String {Unique}
+  + id_personnel : BigAuto {FK}
+  + id_demande : BigAuto {FK, Nullable}
+  + id_direction : BigAuto {FK}
+  + budget : String = "Budget Général"
+  + imputation_budgetaire : String
+  + corps_grade : String
+  + indice : Integer
+  + annees_titre : String
+  + details_jours : Text
+  + date_demande_reference : Date
+  + date_emission : Date
+  + signataire : String
+  + fichier_scan_path : String
+  + est_valide : Boolean = True
+  --
+  + extraire_donnees_ocr(fichier_scan)
+  + valider_et_activer_par_rh()
+}
+
+' Relations entre les classes
+
+Direction "1" -- "0..*" Service : contient >
+Direction "1" -- "1..*" Personnel : emploie >
+Service "0..1" -- "0..*" Personnel : rattache >
+
+Personnel "1" -- "0..*" SoldeConge : possède >
+Personnel "1" -- "0..*" DemandeAbsence : émet >
+Personnel "1" -- "0..*" ValidationWorkflow : valide >
+Personnel "1" -- "0..*" DecisionConge : bénéficie de >
+
+DemandeAbsence "1" -- "0..*" ValidationWorkflow : subit >
+DemandeAbsence "0..1" -- "0..1" DecisionConge : génère >
+
+Direction "1" -- "0..*" DecisionConge : gère / émet >
+
+@enduml

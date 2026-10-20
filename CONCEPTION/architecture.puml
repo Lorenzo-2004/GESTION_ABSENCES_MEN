@@ -1,0 +1,35 @@
+@startuml architecture_projet
+skinparam componentStyle rectangle
+skinparam packageStyle frame
+
+package "CLIENT WEB (Frontend React)" {
+  [Views / Pages React] as Views
+  [Components UI (Tailwind)] as Components
+  [Axios Client / JWT Interceptor] as Axios
+  Views --> Components
+  Views --> Axios
+}
+
+package "SERVEUR API (Backend Django)" {
+  [API Router (DRF Endpoints)] as Router
+  [RBAC & Auth Middleware] as Auth
+  [Business Logic / Workflow] as Logic
+  [Service OCR Engine (Tesseract)] as OCR
+  [Service PDF Generator (ReportLab)] as PDF
+  [Django ORM] as ORM
+  
+  Router --> Auth
+  Auth --> Logic
+  Logic --> OCR
+  Logic --> PDF
+  Logic --> ORM
+}
+
+database "BASE DE DONNEES (PostgreSQL)" {
+  [Tables Relationnelles (7 Tables)] as BDD
+}
+
+Axios --> Router : Requêtes HTTPS / JSON (REST)
+ORM --> BDD : SQL (Requêtes / Migrations)
+
+@enduml

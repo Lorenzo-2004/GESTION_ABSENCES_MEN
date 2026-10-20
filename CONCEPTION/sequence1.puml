@@ -1,0 +1,100 @@
+@startuml sequence_demande_conge
+autonumber
+skinparam style strictuml
+skinparam sequenceMessageScale 1.0
+skinparam boxPadding 10
+skinparam participantPadding 10
+
+actor "Agent RH" as RH
+actor "Agent / Employé" as Agent
+participant "Interface React\n(Frontend)" as Front
+participant "API Django\n(Backend)" as API
+participant "Service OCR\n(Tesseract/PDF)" as OCR
+database "PostgreSQL\n(BDD)" as BDD
+
+' ==========================================
+' PHASE 1 : NUMÉRISATION & ACTIVATION PAR LA RH
+' ==========================================
+group Phase 1 : Enregistrement OCR de la Décision par la RH
+    RH -> Front : Téléverse le scan de la Décision de Congé (PDF/Image)
+    Front -> API : POST /api/decisions/scan/ (fichier)
+    activate API
+    API -> OCR : Traitement du document scanné
+    activate OCR
+    OCR --> API : Données extraites (IM, N° Décision, Années, Indice...)
+    deactivate OCR
+    
+    API -> BDD : Recherche du personnel par IM
+    BDD --> API : Infos Agent (Nom, Grade, Statut)
+    API --> Front : JSON {Données extraites + Infos Agent}
+    deactivate API
+    
+    Front --> RH : Affiche le formulaire pré-rempli + aperçu scan
+    RH -> Front : Clique sur "Valider & Activer la Décision"
+    Front -> API : POST /api/decisions/confirmer/
+    activate API
+    
+    API -> BDD : SELECT statut FROM personnels WHERE id_personnel = Agent
+    BDD --> API : Statut Agent ('FONCTIONNAIRE', 'ECD', 'STAGIAIRE')
+
+    alt Statut Agent == 'STAGIAIRE'
+        API --> Front : 400 Bad Request ("Impossible d'associer une décision de congé annuel à un stagiaire")
+    else Statut Agent IN ('FONCTIONNAIRE', 'ECD')
+        API -> BDD : INSERT INTO decisions_conge (est_valide = True)
+        API -> BDD : UPDATE/INSERT soldes_conge (droit_annuel = 30)
+        BDD --> API : Confirmation sauvegarde
+        API --> Front : 201 Created (Décision activée)
+    end
+    deactivate API
+end
+
+' ==========================================
+' PHASE 2 : SOUMISSION DE LA DEMANDE PAR L'AGENT
+' ==========================================
+group Phase 2 : Soumission de la demande par l'Agent
+    Agent -> Front : Saisit son IM et clique sur "Nouvelle Demande"
+    Front -> API : GET /api/personnels/{IM}/
+    API -> BDD : Récupère infos agent & statut
+    BDD --> API : Données personnelles (ex: statut='STAGIAIRE')
+    API --> Front : Autofill (Nom, Direction, Statut)
+    
+    Agent -> Front : Sélectionne type_absence (CONGE_ANNUEL, PERMISSION...), dates et motif
+    Agent -> Front : Soumet le formulaire
+    
+    Front -> API : POST /api/demandes/ (IM, type_absence, dates, motif)
+    activate API
+    
+    ' Contrôle 1 : Vérification Stagiaire
+    alt statut == 'STAGIAIRE' AND type_absence == 'CONGE_ANNUEL'
+        API --> Front : 400 Bad Request ("Blocage : Les stagiaires n'ont pas droit au congé annuel")
+        Front --> Agent : Affiche l'alerte de restriction réglementaire
+        
+    ' Contrôle 2 : Vérification Décision RH (Uniquement Congé Annuel pour non-stagiaires)
+    else statut != 'STAGIAIRE' AND type_absence == 'CONGE_ANNUEL'
+        API -> BDD : SELECT * FROM decisions_conge WHERE id_personnel=Agent AND est_valide=True
+        
+        alt Aucune décision RH valide
+            BDD --> API : Aucun résultat
+            API --> Front : 400 Bad Request ("Blocage : Aucune décision RH enregistrée")
+            Front --> Agent : Affiche l'alerte de blocage administratif
+        else Décision RH valide trouvée
+            BDD --> API : Décision confirmée
+            API -> BDD : INSERT INTO demandes_absence (statut='EN_ATTENTE')
+            BDD --> API : Demande enregistrée
+            API -> API : Générer le PDF pré-rempli (ReportLab)
+            API --> Front : 201 Created + Formulaire PDF
+        end
+        
+    ' Cas 3 : Autres types d'absences (Permission, Autorisation, Mission, Maladie...)
+    else Autres types d'absences (Accessible à tous y compris Stagiaires)
+        API -> BDD : INSERT INTO demandes_absence (type_absence, statut='EN_ATTENTE')
+        BDD --> API : Demande enregistrée
+        API -> API : Générer le PDF pré-rempli (ReportLab)
+        API --> Front : 201 Created + Formulaire PDF
+    end
+    
+    deactivate API
+    Front --> Agent : Confirmation + Option Télécharger le Formulaire PDF
+end
+
+@enduml
