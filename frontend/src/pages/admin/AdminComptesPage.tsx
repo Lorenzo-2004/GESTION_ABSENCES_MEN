@@ -1,4 +1,3 @@
-import { isAxiosError } from 'axios'
 import {
   useCallback,
   useEffect,
@@ -31,6 +30,7 @@ import {
 import { Icon, Message, type IconName } from '../../components/men/ui'
 import { delai, useCompteur } from '../../components/men/ui-outils'
 import { CoquilleAdmin, Tiroir } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
 
 const TAILLE_PAGE = 20
 
@@ -113,24 +113,7 @@ const champ =
 /* ------------------------------------------------------------------ */
 
 function extraireErreur(erreur: unknown): string {
-  if (!isAxiosError(erreur)) return 'Une erreur inattendue est survenue.'
-  if (!erreur.response) return 'Le serveur est inaccessible. Vérifiez que le backend est démarré.'
-  const donnees = erreur.response.data as Record<string, unknown> | string | undefined
-  if (typeof donnees === 'string') return donnees
-  if (donnees && typeof donnees === 'object') {
-    const detail = donnees.detail ?? donnees.message
-    if (typeof detail === 'string') return detail
-    const messages = Object.entries(donnees)
-      .filter(([champ]) => champ !== 'detail')
-      .flatMap(([champ, valeur]) => {
-        const valeurs = Array.isArray(valeur) ? valeur : [valeur]
-        return valeurs.filter((item) => typeof item === 'string').map((item) => `${champ} : ${item}`)
-      })
-    if (messages.length > 0) return messages.join(' ')
-  }
-  if (erreur.response.status === 401 || erreur.response.status === 403) return 'Accès refusé ou session expirée.'
-  if (erreur.response.status === 429) return 'Trop de requêtes. Attendez avant de réessayer.'
-  return `La requête a échoué (HTTP ${erreur.response.status}).`
+  return messageErreurUtilisateur(erreur, 'Impossible de traiter cette opération. Vérifiez les informations puis réessayez.')
 }
 
 function dateLisible(valeur: string | null): string {
@@ -173,16 +156,10 @@ interface Segment {
 function BadgeStatut({ actif }: { actif: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
-        actif ? 'bg-[#00FF9C]/10 text-[#0A0A0A]' : 'bg-[#D0D0D9] text-[#0A0A0A]'
+      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
+        actif ? 'bg-[#DDF4EA] text-[#245B45]' : 'bg-[#E4E5E7] text-[#4B5056]'
       }`}
     >
-      <span className="relative flex h-2 w-2">
-        {actif && (
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00FF9C] opacity-50 motion-reduce:animate-none" />
-        )}
-        <span className={`relative h-2 w-2 rounded-full ${actif ? 'bg-[#00FF9C]' : 'bg-slate-400'}`} />
-      </span>
       {actif ? 'Actif' : 'Inactif'}
     </span>
   )
@@ -645,7 +622,7 @@ export function AdminComptesPage() {
       setCompteCible(null)
       setMotDePasse('')
       setPage(1)
-      setMessageSucces(modeFormulaire === 'creation' ? 'Le compte a été créé.' : 'Les modifications ont été enregistrées.')
+      setMessageSucces(modeFormulaire === 'creation' ? 'Le compte utilisateur a bien été créé.' : 'Les modifications ont été enregistrées.')
 
       if (page === 1) setCleActualisation((cle) => cle + 1)
     } catch (cause) {

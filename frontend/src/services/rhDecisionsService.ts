@@ -47,6 +47,12 @@ export interface DonneesExtraitesDecision {
   numero_decision: string | null
   indice: string | number | null
   annees: number[]
+  /** Formatted value that can be placed directly in the RH form. */
+  annees_titre?: string
+  /** Champs que l'OCR n'a pas reconnus et que la RH doit vérifier/saisir. */
+  champs_manquants?: string[]
+  /** Limitations ou problèmes détectés pendant la lecture du scan. */
+  avertissements?: string[]
   texte_brut: string
 }
 
@@ -55,6 +61,7 @@ export interface ResultatScanDecision {
   agent: PersonnelDecision | null
   statut_agent: string | null
   nature: string | null
+  numero_deja_utilise?: boolean
 }
 
 export interface CreationDecision {

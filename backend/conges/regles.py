@@ -22,12 +22,27 @@ DUREE_MAX_JOURS = {
     TypeAbsence.PATERNITE: 15,
 }
 
-# RG-08 : pièces justificatives obligatoires
-JUSTIFICATIF_OBLIGATOIRE = {
-    TypeAbsence.MISSION,
-    TypeAbsence.REPOS_SANITAIRE,
-    TypeAbsence.MATERNITE,
-    TypeAbsence.PATERNITE,
+# La fiche officielle MEN ne concerne que les trois demandes formalisées par PDF.
+TYPES_AVEC_FORMULAIRE_OFFICIEL = frozenset({
+    TypeAbsence.CONGE_ANNUEL,
+    TypeAbsence.PERMISSION,
+    TypeAbsence.AUTORISATION,
+})
+
+# RG-08 (assouplie) : le justificatif reste possible pour tous les types mais n'est
+# plus exigé. Mission, repos sanitaire, maternité et paternité peuvent être déposés
+# sans pièce jointe ; l'agent peut la joindre plus tard via l'endpoint dédié.
+JUSTIFICATIF_OBLIGATOIRE = frozenset()
+
+# Types dont la période est calculée par le système à partir de la date prévue de
+# l'accouchement : l'agent ne saisit ni date de début ni date de fin.
+TYPES_PERIODE_AUTOMATIQUE = frozenset({TypeAbsence.MATERNITE, TypeAbsence.PATERNITE})
+
+# Nombre de jours entre la date prévue et le premier jour de congé (0 = le congé
+# commence à la date prévue). À ajuster ici si le MEN fait débuter le congé avant.
+DECALAGE_DEBUT_JOURS = {
+    TypeAbsence.MATERNITE: 0,
+    TypeAbsence.PATERNITE: 0,
 }
 
 # RG-07 : observation motivée obligatoire pour les demandes de faveur
@@ -92,6 +107,13 @@ def iter_jours(debut: date, fin: date):
     """Itère sur chaque date couverte par la période, bornes incluses."""
     total = nombre_jours_calendaires(debut, fin)
     return (debut + timedelta(days=decalage) for decalage in range(total))
+
+
+def periode_automatique(type_absence, date_evenement: date) -> tuple[date, date]:
+    """Période d'un congé de maternité (90 j) ou de paternité (15 j), bornes incluses."""
+    duree = DUREE_MAX_JOURS[type_absence]
+    debut = date_evenement + timedelta(days=DECALAGE_DEBUT_JOURS.get(type_absence, 0))
+    return debut, debut + timedelta(days=duree - 1)
 
 
 def annee_de_reference(debut: date) -> int:

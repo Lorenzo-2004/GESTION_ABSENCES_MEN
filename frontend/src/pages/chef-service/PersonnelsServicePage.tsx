@@ -1,4 +1,3 @@
-import { isAxiosError } from 'axios'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate } from 'react-router'
 
@@ -17,6 +16,8 @@ import {
   CoquilleService,
   type VueService,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
+import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
 
 const TITRES_VUES: Record<VueService, { titre: string; description: string }> = {
   apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et du service' },
@@ -114,11 +115,7 @@ const AVATARS = [
 /* ------------------------------------------------------------------ */
 
 function messageErreur(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    const donnees = erreur.response?.data as { detail?: string; message?: string; error?: string } | undefined
-    return donnees?.detail ?? donnees?.message ?? donnees?.error ?? 'Impossible de charger le personnel du service.'
-  }
-  return 'Une erreur inattendue est survenue.'
+  return messageErreurUtilisateur(erreur, 'Impossible de traiter cette action. Vérifiez les informations puis réessayez.')
 }
 
 function initiales(nom: string): string {
@@ -307,7 +304,7 @@ export function PersonnelsServicePage() {
 
     try {
       await enregistrerAvisChefService(idDemande, avis, observation)
-      setMessageAvis(avis === 'FAVORABLE' ? 'Le visa favorable a été enregistré.' : 'Le visa défavorable a été enregistré.')
+      setMessageAvis(avis === 'FAVORABLE' ? 'La demande a été acceptée et transmise à la direction pour enregistrement.' : 'La demande a été refusée. Le refus a bien été enregistré.')
       setObservations((precedentes) => ({ ...precedentes, [idDemande]: '' }))
       await chargerDemandes()
     } catch (cause) {
@@ -398,7 +395,7 @@ export function PersonnelsServicePage() {
           </div>
         </div>
         <div className="min-w-0 lg:text-right">
-          <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">Bonjour</h2>
+          <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">{nomAffichageUtilisateur(utilisateur)}</h2>
           <p className="men-serif text-2xl leading-tight text-[#71717B] sm:text-4xl">Mon équipe</p>
           <p className="mt-2 text-xs text-[#4F4F58]">{serviceLibelle || 'Agents affectés à votre service'} · {valeurAffichage(personnels.length)} agent{personnels.length > 1 ? 's' : ''} rattaché{personnels.length > 1 ? 's' : ''}</p>
           {(utilisateur.role === 'ROLE_CHEF_SERVICE' || utilisateur.role === 'ROLE_RH') && demandes.length > 0 && (

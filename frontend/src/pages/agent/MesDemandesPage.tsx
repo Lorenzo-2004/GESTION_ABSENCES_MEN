@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Navigate } from 'react-router'
-import { isAxiosError } from 'axios'
 
 import { useAuth } from '../../contexts/useAuth'
 import { peutAccederEspaceAgent } from '../../lib/roles'
 import {
   listerMesDemandes,
   recupererFormulaireOfficiel,
+  verifierIntegriteFormulaire,
+  type VerificationIntegriteDocument,
+  typePossedeFicheOfficielle,
   type DemandeConge,
   type StatutDemande,
 } from '../../services/congesService'
@@ -18,6 +20,7 @@ import {
   Tiroir,
   type VueAgent,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
 
 const STATUTS: { valeur: StatutDemande; libelle: string }[] = [
   { valeur: 'EN_ATTENTE', libelle: 'En attente' },
@@ -97,7 +100,7 @@ const TONS_KPI = {
 const TITRES_VUES: Record<VueAgent, { titre: string; description: string }> = {
   apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et soldes' },
   demandes: { titre: 'Mes demandes', description: 'Consultez vos demandes et leur état' },
-  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Remplissez le formulaire officiel' },
+  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Déposez une demande ou une annonce d’absence' },
   soldes: { titre: 'Mes soldes', description: 'Droits à congé de l’année en cours' },
   historique: { titre: 'Historique', description: 'Détail des validations' },
   profil: { titre: 'Mon profil', description: 'Informations du personnel' },
@@ -108,14 +111,7 @@ const TITRES_VUES: Record<VueAgent, { titre: string; description: string }> = {
 /* ------------------------------------------------------------------ */
 
 function erreurAPI(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    const detail = erreur.response?.data?.detail
-    if (typeof detail === 'string') return detail
-    if (!erreur.response) return 'Impossible de joindre le serveur. Vérifiez que le backend fonctionne.'
-    if (erreur.response.status === 401) return 'Votre session a expiré. Reconnectez-vous.'
-    if (erreur.response.status === 403) return "Vous n'êtes pas autorisé à consulter ces demandes."
-  }
-  return 'Une erreur est survenue pendant le chargement des demandes.'
+  return messageErreurUtilisateur(erreur, 'Impossible de charger cette information. Réessayez dans quelques instants.')
 }
 
 function dateCourte(date: string | null | undefined): string {
@@ -245,6 +241,7 @@ export function MesDemandesPage() {
   const [urlPDF, setUrlPDF] = useState<string | null>(null)
   const [chargementPDF, setChargementPDF] = useState(false)
   const [erreurPDF, setErreurPDF] = useState('')
+  const [integritePDF, setIntegritePDF] = useState<VerificationIntegriteDocument | null>(null)
   const iframePDF = useRef<HTMLIFrameElement>(null)
 
   useEffect(() => {
@@ -320,14 +317,29 @@ export function MesDemandesPage() {
   }
 
   async function ouvrirApercuPDF(demande: DemandeConge) {
+    if (!typePossedeFicheOfficielle(demande.type_absence)) {
+      setErreur('La fiche officielle est disponible uniquement pour le congé annuel, la permission et l’autorisation d’absence.')
+      return
+    }
     setDemandeApercuPDF(demande)
     setErreurPDF('')
     setUrlPDF(null)
+    setIntegritePDF(null)
     setChargementPDF(true)
     try {
       const fichierPDF = await recupererFormulaireOfficiel(demande.id_demande)
+      const verification = await verifierIntegriteFormulaire(demande.id_demande)
+      if (
+        verification.integrite_globale !== true ||
+        verification.document_integrite !== true ||
+        verification.journal_integrite !== true ||
+        verification.signature_integrite === false
+      ) {
+        throw new Error('La vérification du document n’a pas abouti. Contactez le service gestionnaire avant de l’utiliser.')
+      }
       const fichierValide = new Blob([fichierPDF], { type: 'application/pdf' })
       setUrlPDF(URL.createObjectURL(fichierValide))
+      setIntegritePDF(verification)
     } catch (cause) {
       setErreurPDF(erreurAPI(cause))
     } finally {
@@ -339,6 +351,7 @@ export function MesDemandesPage() {
     setDemandeApercuPDF(null)
     setErreurPDF('')
     setUrlPDF(null)
+    setIntegritePDF(null)
   }
 
   const messages = (
@@ -393,8 +406,8 @@ export function MesDemandesPage() {
           </section>
 
           <section className={`rh-in flex min-w-0 flex-col justify-center gap-6 p-6 sm:flex-row sm:items-center ${carte}`} style={delai(120)}>
-            <div className="mx-auto grid h-32 w-32 place-items-center rounded-full bg-[#1B1BFF]/10 sm:mx-0">
-              <div className="text-center">
+            <div className="mx-auto grid h-36 w-36 shrink-0 place-items-center rounded-full border border-[#D9DDFF] bg-[#F6F7FF] p-[7px] shadow-[0_8px_22px_-12px_rgba(27,27,255,.22)] ring-8 ring-[#E9EBFF]/80 sm:mx-0">
+              <div className="grid h-full w-full place-items-center rounded-full border border-[#BFC6FF] bg-[#E5E9FF] text-center shadow-[inset_0_1px_3px_rgba(27,27,255,.05)]">
                 <p className="men-serif text-3xl leading-none tabular-nums text-[#0A0A0A]">{chargementDemandes ? 0 : total}</p>
                 <p className="mt-1 text-xs font-medium text-[#86868B]">demandes</p>
               </div>
@@ -518,9 +531,11 @@ export function MesDemandesPage() {
                       <div><dt className="text-[#86868B]">Durée</dt><dd className="mt-0.5 font-medium text-[#0A0A0A]">{demande.nombre_jours} j</dd></div>
                       <div><dt className="text-[#86868B]">Dépôt</dt><dd className="mt-0.5 font-medium text-[#0A0A0A]">{dateCourte(demande.date_creation)}</dd></div>
                     </dl>
-                    <button type="button" onClick={() => void ouvrirApercuPDF(demande)} disabled={chargementPDF} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1B1BFF]/10 px-3 text-xs font-semibold text-[#1B1BFF] transition hover:bg-[#1B1BFF]/20 disabled:opacity-50">
-                      <Icon name="file" className="h-3.5 w-3.5" /> Aperçu PDF
-                    </button>
+                    {typePossedeFicheOfficielle(demande.type_absence) && (
+                      <button type="button" onClick={() => void ouvrirApercuPDF(demande)} disabled={chargementPDF} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1B1BFF]/10 px-3 text-xs font-semibold text-[#1B1BFF] transition hover:bg-[#1B1BFF]/20 disabled:opacity-50">
+                        <Icon name="file" className="h-3.5 w-3.5" /> Aperçu PDF
+                      </button>
+                    )}
                   </article>
                 ))}
               </div>
@@ -544,9 +559,11 @@ export function MesDemandesPage() {
                           <span className="absolute inset-y-2 left-0 w-[3px] scale-y-0 rounded-r-full bg-[#1B1BFF] transition-transform duration-300 group-hover:scale-y-100" />
                           <p className="font-semibold text-[#0A0A0A]">{demande.numero_enregistrement || `Demande #${demande.id_demande}`}</p>
                           <p className="mt-0.5 text-xs text-[#86868B]">Déposée le {dateCourte(demande.date_creation)}</p>
-                          <button type="button" onClick={() => void ouvrirApercuPDF(demande)} disabled={chargementPDF} className="mt-1.5 inline-flex h-7 items-center gap-1.5 rounded-md bg-[#1B1BFF]/10 px-2 text-xs font-semibold text-[#1B1BFF] transition hover:bg-[#1B1BFF]/20 disabled:opacity-50">
-                            <Icon name="file" className="h-3 w-3" /> Aperçu PDF
-                          </button>
+                          {typePossedeFicheOfficielle(demande.type_absence) && (
+                            <button type="button" onClick={() => void ouvrirApercuPDF(demande)} disabled={chargementPDF} className="mt-1.5 inline-flex h-7 items-center gap-1.5 rounded-md bg-[#1B1BFF]/10 px-2 text-xs font-semibold text-[#1B1BFF] transition hover:bg-[#1B1BFF]/20 disabled:opacity-50">
+                              <Icon name="file" className="h-3 w-3" /> Aperçu PDF
+                            </button>
+                          )}
                         </td>
                         <td className="px-3 py-3 text-[#0A0A0A]">{demande.type_absence_libelle || demande.type_absence}</td>
                         <td className="px-3 py-3 text-[#0A0A0A]">
@@ -646,6 +663,28 @@ export function MesDemandesPage() {
                 </button>
               </div>
             </header>
+            {integritePDF && urlPDF && (
+              <div className="border-b border-[#D1FAE5] bg-[#F0FDF4] px-4 py-2.5 text-xs text-[#166534] sm:px-6">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                  <Icon name="shield" className="h-4 w-4 shrink-0" />
+                  <span className="font-semibold">Intégrité du document vérifiée</span>
+                  <span className="text-[#4B7A5B]">
+                    {integritePDF.signature_integrite === true
+                      ? 'La signature, le PDF enregistré et le journal de traçabilité concordent.'
+                      : 'Le PDF enregistré et le journal sont intègres ; la signature n’est pas disponible pour cette ancienne demande.'}
+                  </span>
+                </div>
+                <details className="mt-1.5">
+                  <summary className="cursor-pointer font-medium underline decoration-dotted underline-offset-2">Afficher les informations de vérification</summary>
+                  <div className="mt-2 grid gap-1.5 break-words sm:grid-cols-2">
+                    <p>Signé par : <strong>{integritePDF.signature_par || 'Compte non disponible'}</strong></p>
+                    <p>Signature enregistrée : <strong>{integritePDF.signature_le ? dateCourte(integritePDF.signature_le) : 'Non renseignée'}</strong></p>
+                    <p className="sm:col-span-2">Empreinte SHA-256 du PDF : <code className="select-all text-[10px]">{integritePDF.empreinte_pdf}</code></p>
+                    <p className="sm:col-span-2">Événements de traçabilité : <strong>{integritePDF.historique.length}</strong></p>
+                  </div>
+                </details>
+              </div>
+            )}
             <div className="min-h-0 flex-1 bg-[#F5F5F7] p-2 sm:p-4">
               {chargementPDF ? (
                 <div className="grid h-full place-items-center text-xs font-medium text-[#86868B]">

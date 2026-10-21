@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { isAxiosError } from 'axios'
 import { Link, Navigate } from 'react-router'
 
 import { useAuth } from '../../contexts/useAuth'
@@ -15,6 +14,8 @@ import {
   CoquilleService,
   type VueService,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
+import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
 
 const TITRES_VUES: Record<VueService, { titre: string; description: string }> = {
   apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et du service' },
@@ -124,14 +125,7 @@ function dateLisible(date: string): string {
 }
 
 function messageErreur(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    if (erreur.response?.status === 401) return 'Votre session a expiré. Reconnectez-vous.'
-    if (erreur.response?.status === 403) return "Vous n'êtes pas autorisé à consulter ces données."
-    const detail = erreur.response?.data?.detail
-    if (typeof detail === 'string') return detail
-    if (!erreur.response) return 'Le serveur est injoignable. Vérifiez que Django fonctionne.'
-  }
-  return 'Une erreur est survenue lors du chargement du planning.'
+  return messageErreurUtilisateur(erreur, 'Le planning n’a pas pu être chargé. Réessayez dans quelques instants.')
 }
 
 function classeStatut(statut: string): string {
@@ -496,7 +490,7 @@ export function PlanningServicePage() {
           </div>
         </div>
         <div className="min-w-0 lg:text-right">
-          <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">Bonjour</h2>
+          <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">{nomAffichageUtilisateur(utilisateur)}</h2>
           <p className="men-serif text-2xl leading-tight text-[#71717B] sm:text-4xl">Planning des absences</p>
           <p className="mt-2 text-xs text-[#4F4F58]">{nomService} · {personnels.length} personnel(s) · {titreMois}</p>
           <Link to="/app/chef-service/personnel" className="mt-4 inline-flex h-9 items-center gap-2 rounded-full bg-[#1B1BFF] px-4 text-xs font-semibold text-white transition hover:bg-[#1414D6] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#1B1BFF]/25">

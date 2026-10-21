@@ -17,7 +17,7 @@ class VerrouillageDemandesTests(BaseAPICase):
         self.connecter(self.compte_agent)
         reponse = self.client.post(
             "/api/demandes/",
-            {"type_absence": "PERMISSION", "date_debut": "2026-03-02", "date_fin": "2026-03-03"},
+            {"motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION", "date_debut": "2026-03-02", "date_fin": "2026-03-03"},
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)

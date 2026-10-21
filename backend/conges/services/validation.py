@@ -34,8 +34,16 @@ def _statut_apres_avis_chef(demande, valideur, avis_favorable):
     if demande.statut_demande != StatutDemande.EN_ATTENTE:
         raise ValidationError("Cette demande n'est plus en attente de visa.")
     if demande.personnel.est_chef_de_service:
-        raise ValidationError("La demande d'un chef de service va directement au directeur (RG-10).")
-    if valideur.service_id is None or valideur.service_id != demande.personnel.service_id:
+        raise ValidationError(
+            "La demande d'un chef de service ou d'un responsable RH va directement "
+            "au directeur (RG-10) : elle ne passe pas par le visa du service."
+        )
+    if valideur.service_id is None:
+        raise ValidationError(
+            "Votre fiche personnel n'est rattachée à aucun service : "
+            "demandez à l'administrateur de vous en affecter un."
+        )
+    if valideur.service_id != demande.personnel.service_id:
         raise ValidationError("Cette demande n'appartient pas à votre service.")
     return StatutDemande.APPROUVE_CS if avis_favorable else StatutDemande.REJETE
 

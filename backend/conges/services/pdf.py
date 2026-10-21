@@ -16,12 +16,16 @@ from io import BytesIO
 from pathlib import Path
 
 from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as canvas_lib
 from pypdf import PdfReader, PdfWriter
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from ..enums import TypeAbsence
 from ..models import DecisionConge
+from ..regles import TYPES_AVEC_FORMULAIRE_OFFICIEL
 
 LARGEUR, HAUTEUR = A4  # 595 x 842 points
 
@@ -40,41 +44,71 @@ TAILLE = 10.5
 #  de la ligne de pointillés où écrire.
 # --------------------------------------------------------------------------- #
 EMPLACEMENTS = {
-    # Identité de l'agent
-    "nom": (166, 277),
-    "im": (80, 298),
-    "corps": (455, 298),
-    "grade": (110, 322),
-    "service": (160, 343),
-    "budget": (110, 365),
-    "chapitre": (410, 365),
+    # En-tête : numéro d'ordre après « N° 2026- » et date après « Antananarivo, le »
+    "numero": (108, 241.0),
+    "date_demande": (453, 146.4),
+
+    # Identité de l'agent (ordonnée = ligne de base des libellés mesurée sur le scan)
+    "nom": (166, 277.2),
+    "im": (80, 299.4),
+    "corps": (344, 299.4),
+    "grade": (110, 321.0),
+    "service": (160, 343.0),
+    "budget": (110, 364.4),
+    "chapitre": (358, 364.4),
 
     # Informations sur la demande
-    "jours": (280, 425),
-    "au_titre": (465, 388),
-    "du": (88, 410),
-    "au": (315, 410),
-    "motif": (110, 432),
-    "lieu": (240, 457),
+    "jours": (290, 386.4),
+    "au_titre": (465, 386.4),
+    "du": (88, 407.4),
+    "au": (290, 407.4),
+    "motif": (104, 429.0),
+    "lieu": (182, 452.2),
 
     # Partie réservée à la décision et au solde
-    "decision_num": (230, 658),
-    "droit_annee": (195, 680),
-    "jours_bas": (195, 698),
-    "jours_restants": (195, 720),
-
-    # Cases du type d'absence
-    "croix_conge": (384, 163),
-    "croix_permission": (384, 186),
-    "croix_autorisation": (384, 209),
+    "decision_num": (198, 656.5),
+    "decision_date": (336, 656.5),
+    "droit_annee": (198, 677.8),
+    "jours_bas": (198, 698.0),
+    "jours_restants": (198, 719.0),
 }
 
+# Bord droit (en points) à ne pas dépasser pour chaque valeur : marge de la page,
+# ou début du libellé suivant sur la même ligne. Au-delà, la taille du texte est
+# réduite, puis le texte est tronqué avec « … » en dernier recours.
+BORD_DROIT_PAR_DEFAUT = 540
+BORDS_DROITS = {
+    "numero": 158,
+    "date_demande": 540,
+    "budget": 290,
+    "jours": 385,
+    "au_titre": 540,
+    "du": 262,
+    "decision_num": 252,
+    "decision_date": 540,
+    "droit_annee": 262,
+    "jours_bas": 262,
+    "jours_restants": 262,
+}
+TAILLE_MIN = 7.0
+
+# Soulignement du type d'absence, dans le bloc « DEMANDE DE : ».
+# Positions mesurées sur le scan du formulaire (pixels à 4x convertis en points) :
+# (x de départ, x de fin, distance du trait depuis le haut de la page).
+# Le trait commence à la première lettre (après le tiret) et finit à la dernière,
+# environ 1,6 pt sous la ligne de base du libellé.
 SOULIGNEMENTS_TYPES = {
-    # x de départ, distance depuis le haut, largeur du trait (points PDF)
-    "conge": (399, 170, 40),
-    "permission": (405, 195, 60),
-    "autorisation": (405, 218, 122),
+    "conge": (398.5, 434.0, 169.8),
+    "permission": (398.7, 460.2, 186.6),
+    "autorisation": (398.7, 537.2, 203.8),
 }
+
+# Types sans ligne propre sur le formulaire : ils relèvent de « AUTORISATION D'ABSENCE ».
+LIGNE_PAR_TYPE = {
+    TypeAbsence.CONGE_ANNUEL: "conge",
+    TypeAbsence.PERMISSION: "permission",
+}
+LIGNE_PAR_DEFAUT = "autorisation"
 
 
 def _y(depuis_haut: float) -> float:
@@ -83,74 +117,59 @@ def _y(depuis_haut: float) -> float:
 
 
 def _ecrire(c, valeur, cle, taille=TAILLE):
-    """Écrit une valeur à l'emplacement prévu, si elle existe."""
+    """Écrit une valeur à l'emplacement prévu, si elle existe.
+
+    La valeur ne déborde jamais sur le libellé suivant ni hors de la page : la taille
+    de la police diminue jusqu'à TAILLE_MIN, puis le texte est tronqué avec « … ».
+    """
     if valeur in (None, ""):
         return
+    texte = str(valeur)
     x, haut = EMPLACEMENTS[cle]
+    largeur_max = BORDS_DROITS.get(cle, BORD_DROIT_PAR_DEFAUT) - x
+
+    while taille > TAILLE_MIN and stringWidth(texte, POLICE, taille) > largeur_max:
+        taille -= 0.25
+    if stringWidth(texte, POLICE, taille) > largeur_max:
+        while len(texte) > 1 and stringWidth(texte + "…", POLICE, taille) > largeur_max:
+            texte = texte[:-1]
+        texte = texte.rstrip() + "…"
+
     c.setFont(POLICE, taille)
-    c.drawString(x, _y(haut), str(valeur))
+    c.drawString(x, _y(haut), texte)
 
 
 def _souligner_type(c, cle):
-    """Souligne le type d'absence sélectionné sur le formulaire officiel."""
-    x, haut, largeur = SOULIGNEMENTS_TYPES[cle]
+    """Souligne le libellé du type d'absence choisi sur le formulaire officiel."""
+    x_debut, x_fin, haut = SOULIGNEMENTS_TYPES[cle]
 
     c.saveState()
     c.setStrokeColorRGB(0, 0, 0)
-    c.setLineWidth(0.62)
-
-    # Le trait est placé légèrement sous la ligne du libellé imprimé.
-    y = _y(haut) - 2
-    c.line(x, y, x + largeur, y)
-
+    c.setLineWidth(0.9)
+    c.line(x_debut, _y(haut), x_fin, _y(haut))
     c.restoreState()
 
 
 def _marquer_type_absence(c, demande):
-    """Coche le type d'absence sur le formulaire officiel par une croix « X »."""
-    if demande.type_absence == TypeAbsence.CONGE_ANNUEL:
-        cle = "croix_conge"
-    elif demande.type_absence == TypeAbsence.PERMISSION:
-        cle = "croix_permission"
-    else:
-        # Le formulaire source regroupe les autres absences dans la catégorie
-        # « autorisation / autre absence ».
-        cle = "croix_autorisation"
-    _ecrire(c, "X", cle, taille=12)
+    """Souligne CONGE, PERMISSION ou AUTORISATION D'ABSENCE selon le type de la demande."""
+    cle = LIGNE_PAR_TYPE.get(demande.type_absence, LIGNE_PAR_DEFAUT)
+    _souligner_type(c, cle)
+
 
 def _verifier_champs_obligatoires(demande):
     """Empêche de produire un formulaire officiel incomplet (RG-16)."""
-    personnel = demande.personnel
-    manquants = []
-
-    champs = {
-        "nom": personnel.nom_complet,
-        "IM": personnel.im,
-        "corps": personnel.corps,
-        "grade": personnel.grade,
-        "service ou direction": personnel.service or personnel.direction,
-        "motif": demande.motif,
-        "lieu de jouissance": demande.lieu_jouissance,
-        "date de début": demande.date_debut,
-        "date de fin": demande.date_fin,
-        "nombre de jours": demande.nombre_jours,
-    }
-    for libelle, valeur in champs.items():
-        if valeur is None or (isinstance(valeur, str) and not valeur.strip()) or valeur == 0:
-            manquants.append(libelle)
+    from .demandes import verifier_dossier_complet
 
     if demande.date_debut and demande.date_fin and demande.date_fin < demande.date_debut:
         raise ValidationError({"date_fin": "La date de fin précède la date de début."})
-
+    if not demande.nombre_jours:
+        raise ValidationError("Impossible de générer le formulaire : nombre de jours invalide.")
     if demande.type_absence == TypeAbsence.CONGE_ANNUEL and not demande.annee_titre:
-        manquants.append("année au titre de laquelle le congé est demandé")
-
-    if manquants:
         raise ValidationError(
-            "Impossible de générer le formulaire officiel : champs obligatoires manquants ou invalides : "
-            + ", ".join(manquants)
-            + "."
+            "Impossible de générer le formulaire : année au titre de laquelle "
+            "le congé est demandé manquante."
         )
+    verifier_dossier_complet(demande)
 
 
 def _decision_et_solde_annuels(demande):
@@ -187,9 +206,25 @@ def _decision_et_solde_annuels(demande):
     return decision, solde
 
 
+def _date_de_la_demande(demande):
+    """Date du dépôt (heure locale) ; la date du jour pour une demande pas encore enregistrée."""
+    creation = getattr(demande, "date_creation", None)
+    if creation is None:
+        return date.today()
+    if hasattr(creation, "astimezone") and timezone.is_aware(creation):
+        creation = timezone.localtime(creation)
+    return creation.date() if hasattr(creation, "date") else creation
+
+
 def _corps_champs(c, demande, decision=None, solde=None):
     """Écrit les données de l'agent et de la demande sur le formulaire."""
     personnel = demande.personnel
+
+    # « N° 2026-.....-MEN/SG/DSI » : seul le numéro d'ordre s'écrit dans les pointillés
+    # (« DA-2026-00007 » → « 00007 »). Le millésime est déjà imprimé sur le formulaire.
+    if demande.numero_enregistrement:
+        _ecrire(c, demande.numero_enregistrement.rsplit("-", 1)[-1], "numero")
+    _ecrire(c, _date_de_la_demande(demande).strftime("%d/%m/%Y"), "date_demande")
 
     _ecrire(c, personnel.nom_complet, "nom")
     _ecrire(c, personnel.im, "im")
@@ -210,6 +245,8 @@ def _corps_champs(c, demande, decision=None, solde=None):
         _ecrire(c, decision.budget, "budget")
         _ecrire(c, decision.imputation_budgetaire, "chapitre")
         _ecrire(c, decision.numero_decision, "decision_num")
+        if decision.date_emission:
+            _ecrire(c, decision.date_emission.strftime("%d/%m/%Y"), "decision_date")
         _ecrire(c, solde.droit_annuel + solde.report_anterieur, "droit_annee")
 
 
@@ -233,13 +270,48 @@ def _blocs_avis(c, demande, solde=None):
     _ecrire(c, _jours_restants(demande, solde), "jours_restants")
 
 
+def _ajouter_signature_agent(c, demande):
+    """Imprime la signature capturée à la soumission dans la zone de l'intéressé(e)."""
+    if not getattr(demande, "signature_agent", None):
+        return  # Compatibilité avec les demandes historiques antérieures à la signature.
+
+    fichier = demande.signature_agent
+    try:
+        fichier.open("rb")
+        try:
+            image = ImageReader(fichier.file)
+            largeur, hauteur = image.getSize()
+            largeur_max, hauteur_max = 128.0, 31.0
+            facteur = min(largeur_max / largeur, hauteur_max / hauteur)
+            largeur_affichee, hauteur_affichee = largeur * facteur, hauteur * facteur
+            # Zone blanche sous le libellé « Signature de l'intéressé(e) » sur le modèle MEN.
+            x = 354.0
+            y = 330.0
+            c.drawImage(
+                image, x, y, width=largeur_affichee, height=hauteur_affichee,
+                preserveAspectRatio=True, mask="auto",
+            )
+        finally:
+            fichier.close()
+    except Exception as exc:
+        raise ValidationError(
+            "La signature enregistrée ne peut pas être intégrée au formulaire officiel. "
+            "Veuillez contacter le service gestionnaire."
+        ) from exc
+
+
 def generer_formulaire_pdf(demande):
     """Retourne un flux (BytesIO) : formulaire officiel pré-rempli.
 
-    Le fichier imprimé est le document réglementaire du MEN lui-même, avec les
-    données de l'agent écrites par-dessus. La demande doit exposer son personnel,
-    ses dates et son nombre de jours ; ce dernier est recalculé s'il est absent.
+    Seuls le congé annuel, la permission et l'autorisation ont une fiche officielle.
+    Maternité, paternité, mission et repos sanitaire sont des annonces sans formulaire.
     """
+    if demande.type_absence not in TYPES_AVEC_FORMULAIRE_OFFICIEL:
+        raise ValidationError(
+            "La fiche officielle MEN est réservée au congé annuel, à la permission "
+            "et à l'autorisation d'absence. Ce type est traité comme une annonce."
+        )
+
     if not demande.nombre_jours:
         demande.calculer_nombre_jours()
 
@@ -254,6 +326,7 @@ def generer_formulaire_pdf(demande):
     _marquer_type_absence(c, demande)
     _corps_champs(c, demande, decision=decision, solde=solde)
     _blocs_avis(c, demande, solde=solde)
+    _ajouter_signature_agent(c, demande)
     c.showPage()
     c.save()
     calque.seek(0)

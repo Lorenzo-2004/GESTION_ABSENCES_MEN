@@ -30,6 +30,39 @@ def _reliquat_a_reporter(personnel, annee):
 
 
 @transaction.atomic
+def propager_report(solde, strict=False):
+    """Répercute le reliquat de `solde` sur les années suivantes, en cascade.
+
+    Règle métier : le reliquat d'une année s'ajoute en entier au droit de la suivante,
+    et ainsi de suite. Avec 30 j de droit : 10 j restants en N → 40 j en N+1 ; 20 j
+    restants en N+1 → 50 j en N+2. Le report n'est donc jamais figé : dès que les jours
+    pris d'une année changent, les années qui suivent (si elles existent) sont recalculées.
+
+    `strict=True` refuse la modification si une année suivante deviendrait négative,
+    c'est-à-dire si les jours reportés ont déjà été consommés sur cette année-là.
+    """
+    courant = solde
+    while True:
+        suivant = (
+            SoldeConge.objects.select_for_update()
+            .filter(personnel_id=courant.personnel_id, annee=courant.annee + 1)
+            .first()
+        )
+        if suivant is None:
+            return
+
+        suivant.report_anterieur = max(courant.solde_restant, 0)
+        suivant.calculer_solde_restant()
+        if strict and suivant.solde_restant < 0:
+            raise ValidationError(
+                f"Ces jours ont déjà été utilisés sur l'année {suivant.annee} (report du reliquat) : "
+                f"le solde de {suivant.annee} deviendrait négatif ({suivant.solde_restant} j)."
+            )
+        suivant.save(update_fields=["report_anterieur", "solde_restant"])
+        courant = suivant
+
+
+@transaction.atomic
 def solde_ou_creer(personnel, annee, droit_annuel=DROIT_ANNUEL_DEFAUT):
     """Retourne (solde, créé) sans réinitialiser un solde déjà enregistré."""
     personnel = _verrouiller_personnel(personnel)
@@ -41,12 +74,15 @@ def solde_ou_creer(personnel, annee, droit_annuel=DROIT_ANNUEL_DEFAUT):
     if solde is not None:
         return solde, False
 
-    return SoldeConge.objects.create(
+    solde = SoldeConge.objects.create(
         personnel=personnel,
         annee=annee,
         droit_annuel=droit_annuel,
         report_anterieur=_reliquat_a_reporter(personnel, annee),
-    ), True
+    )
+    # Une année plus récente existait peut-être déjà : elle reprend le nouveau reliquat.
+    propager_report(solde)
+    return solde, True
 
 
 @transaction.atomic
@@ -90,6 +126,8 @@ def reporter_reliquats(annee_source):
             # conservant droit_annuel et jours_pris déjà enregistrés sur la cible.
             cible.save(update_fields=["report_anterieur", "solde_restant"])
 
+        # Les années suivantes (N+2, N+3…) reprennent aussi le reliquat recalculé.
+        propager_report(cible)
         soldes_reportes.append(cible)
 
     return soldes_reportes
@@ -179,6 +217,7 @@ def solde_du_personnel(personnel, annee):
 __all__ = [
     "archiver_demandes",
     "droits_annuels_du_personnel",
+    "propager_report",
     "reporter_reliquats",
     "solde_ou_creer",
     "solde_du_personnel",

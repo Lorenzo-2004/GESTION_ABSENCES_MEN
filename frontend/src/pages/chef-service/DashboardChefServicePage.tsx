@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { isAxiosError } from 'axios'
-import { Navigate } from 'react-router'
+import { Link, Navigate } from 'react-router'
 
 import { useAuth } from '../../contexts/useAuth'
 import {
@@ -17,6 +16,8 @@ import {
   CoquilleService,
   type VueService,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
+import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
 
 const TITRES_VUES: Record<VueService, { titre: string; description: string }> = {
   apercu: { titre: 'Vue d’ensemble', description: 'Suivi global des demandes et du service' },
@@ -120,14 +121,7 @@ function dateLisible(date: string): string {
 }
 
 function erreurAPI(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    if (erreur.response?.status === 401) return 'Votre session a expiré.'
-    if (erreur.response?.status === 403) return 'Autorisations insuffisantes.'
-    if (!erreur.response) return 'Le serveur est injoignable.'
-    const detail = erreur.response.data?.detail
-    if (typeof detail === 'string') return detail
-  }
-  return 'Impossible de charger ces informations.'
+  return messageErreurUtilisateur(erreur, 'Impossible de charger ces informations. Réessayez dans quelques instants.')
 }
 
 function classeStatut(statut: string): string {
@@ -514,7 +508,14 @@ export function DashboardChefServicePage() {
             <Icon name="alert" className="h-7 w-7" />
           </span>
           <h1 className="men-serif mt-5 text-2xl font-normal text-[#0A0A0A]">Aucun service associé</h1>
-          <p className="mt-2 text-sm text-[#5D5D66]">Votre compte n’est rattaché à aucun service. Contactez l’administrateur.</p>
+          <p className="mt-2 text-sm text-[#5D5D66]">
+            Votre compte n’est rattaché à aucun service. {utilisateur.role === 'ROLE_RH' ? 'L’espace Chef de service n’est pas disponible sans rattachement à un service.' : 'Contactez l’administrateur pour vérifier votre rattachement.'}
+          </p>
+          {utilisateur.role === 'ROLE_RH' && (
+            <Link to="/app/rh" className={`${btnPrimaire} mt-5`}>
+              <Icon name="building" className="h-4 w-4" /> Retour à l’espace RH
+            </Link>
+          )}
         </section>
       </div>
     )
@@ -662,10 +663,12 @@ export function DashboardChefServicePage() {
               </div>
             </div>
             <div className="min-w-0 lg:text-right">
-              <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">Bonjour</h2>
-              <p className="men-serif text-2xl leading-tight text-[#71717B] sm:text-4xl">
-                {chargementDonnees ? 'Chargement des données' : demandes.length > 0 ? `${demandes.length} demande${demandes.length > 1 ? 's' : ''} à examiner` : 'Tout est à jour'}
-              </p>
+              <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">{nomAffichageUtilisateur(utilisateur)}</h2>
+              {(chargementDonnees || demandes.length > 0) && (
+                <p className="men-serif text-2xl leading-tight text-[#71717B] sm:text-4xl">
+                  {chargementDonnees ? 'Chargement des données' : `${demandes.length} demande${demandes.length > 1 ? 's' : ''} à examiner`}
+                </p>
+              )}
               <p className="mt-2 text-xs text-[#4F4F58]">{service} · suivi des demandes et des absences du service</p>
             </div>
           </section>

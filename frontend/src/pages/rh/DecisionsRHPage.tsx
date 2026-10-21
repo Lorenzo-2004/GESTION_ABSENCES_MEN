@@ -34,9 +34,19 @@ import {
   Tiroir,
   type VueRH,
 } from '../../components/men/miseEnPageRH.tsx'
+import { messageErreurUtilisateur } from '../../lib/messages'
+import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
+import { anneesTitreValides, entierValide, nomValide, normaliserAnneesTitre, normaliserEntier, normaliserNom, normaliserNumeroDecision, normaliserTexteLibre, MESSAGE_NOM } from '../../lib/validationChamps'
 
 type FiltreDecision = 'toutes' | 'valides' | 'non_validees'
 type ModeSaisie = 'scan' | 'manuel'
+
+type ConfirmationRH =
+  | { type: 'activation'; decision: DecisionConge }
+  | { type: 'report'; annee: number }
+
+const EXTENSIONS_SCAN_AUTORISEES = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff']
+const TAILLE_SCAN_MAXIMALE = 15 * 1024 * 1024
 
 interface FormulaireDecision {
   numero_decision: string
@@ -152,25 +162,7 @@ function formulaireInitial(): FormulaireDecision {
 }
 
 function messageErreur(erreur: unknown): string {
-  const detail = erreur as {
-    response?: { data?: unknown }
-    message?: string
-  }
-  const donnees = detail?.response?.data
-  if (typeof donnees === 'string') return donnees
-  if (donnees && typeof donnees === 'object') {
-    return Object.entries(donnees as Record<string, unknown>)
-      .map(([champ, valeur]) => {
-        const contenu = Array.isArray(valeur)
-          ? valeur.join(', ')
-          : typeof valeur === 'object'
-            ? JSON.stringify(valeur)
-            : String(valeur)
-        return `${champ} : ${contenu}`
-      })
-      .join(' | ')
-  }
-  return detail?.message || 'Une erreur inattendue est survenue.'
+  return messageErreurUtilisateur(erreur, 'L’opération n’a pas pu être effectuée. Vérifiez les informations puis réessayez.')
 }
 
 function nomPersonnel(personnel?: PersonnelDecision): string {
@@ -453,6 +445,7 @@ export function DecisionsRHPage() {
   const [anneeSource, setAnneeSource] = useState(String(new Date().getFullYear() - 1))
   const [erreur, setErreur] = useState('')
   const [succes, setSucces] = useState('')
+  const [confirmation, setConfirmation] = useState<ConfirmationRH | null>(null)
 
   const total = toutesDecisions.length
   const nombreValides = toutesDecisions.filter((d) => d.est_valide).length
@@ -524,7 +517,32 @@ export function DecisionsRHPage() {
   if (!utilisateur || utilisateur.role !== 'ROLE_RH') return <Navigate to="/app" replace />
 
   function modifierChamp(champ: keyof FormulaireDecision, valeur: string) {
-    setFormulaire((precedent) => ({ ...precedent, [champ]: valeur }))
+    let valeurSecurisee = valeur
+    switch (champ) {
+      case 'numero_decision':
+        valeurSecurisee = normaliserNumeroDecision(valeur)
+        break
+      case 'annees_titre':
+        valeurSecurisee = normaliserAnneesTitre(valeur)
+        break
+      case 'indice':
+        valeurSecurisee = normaliserEntier(valeur, 8)
+        break
+      case 'signataire':
+        valeurSecurisee = normaliserNom(valeur)
+        break
+      case 'budget':
+      case 'imputation_budgetaire':
+      case 'corps_grade':
+        valeurSecurisee = normaliserTexteLibre(valeur).slice(0, 180)
+        break
+      case 'details_jours':
+        valeurSecurisee = normaliserTexteLibre(valeur, true)
+        break
+      default:
+        break
+    }
+    setFormulaire((precedent) => ({ ...precedent, [champ]: valeurSecurisee }))
   }
 
   function selectionnerPersonnel(id: string) {
@@ -574,12 +592,29 @@ export function DecisionsRHPage() {
   }
 
   async function traiterScan(fichier: File | null) {
-    setFichierScan(fichier)
     setResultatScan(null)
     setErreur('')
     setSucces('')
-    if (!fichier) return
+    if (!fichier) {
+      setFichierScan(null)
+      return
+    }
 
+    const extension = fichier.name.toLowerCase().slice(fichier.name.lastIndexOf('.'))
+    if (!EXTENSIONS_SCAN_AUTORISEES.includes(extension)) {
+      setFichierScan(null)
+      viderChampFichier()
+      setErreur('Format du scan non autorisé. Utilisez un PDF, JPG, JPEG, PNG, TIF ou TIFF.')
+      return
+    }
+    if (fichier.size > TAILLE_SCAN_MAXIMALE) {
+      setFichierScan(null)
+      viderChampFichier()
+      setErreur('Le scan ne doit pas dépasser 15 Mo.')
+      return
+    }
+
+    setFichierScan(fichier)
     setChargementScan(true)
     try {
       const resultat = await scannerDecision(fichier)
@@ -595,12 +630,12 @@ export function DecisionsRHPage() {
 
       setFormulaire((precedent) => ({
         ...precedent,
-        numero_decision: extrait.numero_decision || precedent.numero_decision,
+        numero_decision: extrait.numero_decision ? normaliserNumeroDecision(extrait.numero_decision) : precedent.numero_decision,
         personnel: agent ? String(agent.id_personnel) : precedent.personnel,
         direction: agent ? String(agent.direction) : precedent.direction,
         corps_grade: agent ? [agent.corps, agent.grade].filter(Boolean).join(' ') : precedent.corps_grade,
-        indice: extrait.indice !== null && extrait.indice !== undefined ? String(extrait.indice) : precedent.indice,
-        annees_titre: extrait.annees?.length > 0 ? extrait.annees.join('-') : precedent.annees_titre,
+        indice: extrait.indice !== null && extrait.indice !== undefined ? normaliserEntier(String(extrait.indice), 8) : precedent.indice,
+        annees_titre: normaliserAnneesTitre(extrait.annees_titre?.trim() || (extrait.annees?.length > 0 ? extrait.annees.join(', ') : precedent.annees_titre)),
         nature: extrait.source === 'OCR' ? 'OCR' : 'SAISIE_MANUELLE',
       }))
 
@@ -610,7 +645,7 @@ export function DecisionsRHPage() {
           : 'Le texte n’a pas pu être extrait. Vous pouvez saisir les informations manuellement.',
       )
     } catch (e) {
-      setErreur(`L’analyse du scan a échoué. Vous pouvez poursuivre en saisie manuelle. ${messageErreur(e)}`)
+      setErreur(`Le scan n’a pas pu être analysé. Vous pouvez continuer en saisissant les informations manuellement. ${messageErreur(e)}`)
       setFormulaire((precedent) => ({ ...precedent, nature: 'SAISIE_MANUELLE' }))
     } finally {
       setChargementScan(false)
@@ -643,8 +678,31 @@ export function DecisionsRHPage() {
       setErreur('Le numéro de décision est obligatoire.')
       return
     }
+    if (!/[\p{L}\p{N}]/u.test(normaliserNumeroDecision(formulaire.numero_decision))) {
+      setErreur('Saisissez un numéro de décision contenant des lettres ou des chiffres.')
+      return
+    }
+    if (
+      resultatScan?.numero_deja_utilise &&
+      resultatScan.donnees_extraites.numero_decision?.trim() === formulaire.numero_decision.trim()
+    ) {
+      setErreur('Ce numéro de décision existe déjà dans la base. Vérifiez le scan ou corrigez le numéro avant l’enregistrement.')
+      return
+    }
     if (!formulaire.annees_titre.trim()) {
       setErreur('L’année au titre du congé est obligatoire.')
+      return
+    }
+    if (!anneesTitreValides(formulaire.annees_titre)) {
+      setErreur('Indiquez une année ou une plage d’années valide, par exemple 2026 ou 2025-2026.')
+      return
+    }
+    if (formulaire.indice && !entierValide(formulaire.indice, 0, 99999999)) {
+      setErreur('L’indice doit être un nombre entier positif.')
+      return
+    }
+    if (formulaire.signataire.trim() && !nomValide(formulaire.signataire)) {
+      setErreur(`Le signataire : ${MESSAGE_NOM}`)
       return
     }
     if (!formulaire.date_emission) {
@@ -677,36 +735,54 @@ export function DecisionsRHPage() {
       viderChampFichier()
       setTiroirOuvert(false)
       setVue('decisions')
-      setSucces(`La décision ${nouvelleDecision.numero_decision} a été enregistrée. Vérifiez son état avant d’activer les soldes.`)
+      setSucces(`La décision n° ${nouvelleDecision.numero_decision} a bien été enregistrée. Vérifiez les informations puis activez les droits si la décision est valide.`)
       await actualiser()
     } catch (e) {
-      setErreur(`L’enregistrement a échoué. ${messageErreur(e)}`)
+      setErreur(messageErreur(e))
     } finally {
       setEnregistrement(false)
     }
   }
 
-  async function confirmerActivation(decision: DecisionConge) {
-    const confirme = window.confirm(
-      `Confirmer la validation de la décision ${decision.numero_decision} et l’initialisation des soldes ?`,
-    )
-    if (!confirme) return
+  function confirmerActivation(decision: DecisionConge) {
+    setConfirmation({ type: 'activation', decision })
+  }
+
+  async function executerConfirmation() {
+    const action = confirmation
+    if (!action) return
 
     setErreur('')
     setSucces('')
-    setActionEnCours(decision.id_decision)
+
+    if (action.type === 'activation') {
+      setActionEnCours(action.decision.id_decision)
+      try {
+        await activerDecision(action.decision.id_decision)
+        setSucces(`Les droits de congé associés à la décision n° ${action.decision.numero_decision} ont bien été activés.`)
+        await actualiser()
+      } catch (e) {
+        setErreur(messageErreur(e))
+      } finally {
+        setActionEnCours(null)
+        setConfirmation(null)
+      }
+      return
+    }
+
+    setReportEnCours(true)
     try {
-      await activerDecision(decision.id_decision)
-      setSucces(`La demande d’activation de la décision ${decision.numero_decision} a été exécutée.`)
-      await actualiser()
+      const resultat = await reporterReliquats(action.annee)
+      setSucces(`Le report des reliquats de ${action.annee} vers ${action.annee + 1} est terminé. ${resultat.nombre_soldes_reportes} solde(s) ont été mis à jour.`)
     } catch (e) {
-      setErreur(`L’activation a échoué. ${messageErreur(e)}`)
+      setErreur(messageErreur(e))
     } finally {
-      setActionEnCours(null)
+      setReportEnCours(false)
+      setConfirmation(null)
     }
   }
 
-  async function executerReport(e: FormEvent<HTMLFormElement>) {
+  function executerReport(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setErreur('')
     setSucces('')
@@ -715,18 +791,7 @@ export function DecisionsRHPage() {
       setErreur('Saisissez une année antérieure à l’année en cours.')
       return
     }
-    const confirme = window.confirm(`Confirmer le report des reliquats de ${annee} vers ${annee + 1} ?`)
-    if (!confirme) return
-
-    setReportEnCours(true)
-    try {
-      const resultat = await reporterReliquats(annee)
-      setSucces(`${resultat.message} ${resultat.nombre_soldes_reportes} solde(s) reporté(s).`)
-    } catch (e) {
-      setErreur(`Le report a échoué. ${messageErreur(e)}`)
-    } finally {
-      setReportEnCours(false)
-    }
+    setConfirmation({ type: 'report', annee })
   }
 
   function ajusterAnnee(variation: number) {
@@ -762,7 +827,7 @@ export function DecisionsRHPage() {
     ? 'Chargement des données'
     : nombreAVerifier > 0
       ? `${nombreAVerifier} décision${nombreAVerifier > 1 ? 's' : ''} à vérifier`
-      : 'Tout est à jour'
+      : ''
 
   const messages = (
     <>
@@ -825,8 +890,8 @@ export function DecisionsRHPage() {
               </div>
             </div>
             <div className="min-w-0">
-              <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">Bonjour</h2>
-              <p className="men-serif text-2xl leading-tight text-[#52525B] sm:text-4xl">{titreHero}</p>
+              <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">{nomAffichageUtilisateur(utilisateur)}</h2>
+              {titreHero && <p className="men-serif text-2xl leading-tight text-[#52525B] sm:text-4xl">{titreHero}</p>}
             </div>
           </section>
 
@@ -1190,7 +1255,7 @@ export function DecisionsRHPage() {
             </span>
             <div>
               <h2 className="men-serif text-2xl text-[#0A0A0A]">Choisir l’année à reporter</h2>
-              <p className="mt-1 text-sm text-[#52525B]">Les reliquats de l’année source sont reportés vers l’année suivante.</p>
+              <p className="mt-1 text-sm text-[#52525B]">À la création d’un solde N+1, le reliquat N est repris automatiquement. Cette action RH permet aussi de recalculer les soldes déjà présents pour N+1 puis de propager le report aux années suivantes.</p>
             </div>
           </div>
           <form onSubmit={executerReport} className="mt-8">
@@ -1272,7 +1337,7 @@ export function DecisionsRHPage() {
                   <Icon name={chargementScan ? 'scan' : 'upload'} className="h-7 w-7" />
                 </span>
                 <span className="text-sm font-semibold text-[#0A0A0A]">{chargementScan ? 'Analyse en cours' : 'Déposer un scan ou parcourir'}</span>
-                <span className="text-xs text-[#52525B]">PDF, PNG, JPG ou TIFF</span>
+                <span className="text-xs text-[#52525B]">PDF, JPG, JPEG, PNG ou TIFF · 15 Mo maximum</span>
                 <input id="fichier-scan-decision" type="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff" onChange={(e) => void traiterScan(e.target.files?.[0] ?? null)} disabled={chargementScan || enregistrement} className="sr-only" />
                 {chargementScan && (
                   <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-[#1B1BFF]/10">
@@ -1303,8 +1368,38 @@ export function DecisionsRHPage() {
                       <span className="min-w-0"><strong className="font-semibold">{nomPersonnel(resultatScan.agent)}</strong><span className="opacity-80"> · IM {resultatScan.agent.im}</span></span>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-3 rounded-xl border border-[#B4B4BF] bg-[#D0D0D9] px-3.5 py-3 text-sm text-amber-800">
-                      <Icon name="alert" className="h-4 w-4 shrink-0" /> Aucun agent identifié.
+                    <div className="flex items-center gap-3 rounded-xl border border-[#B4B4BF] bg-[#D0D0D9] px-3.5 py-3 text-sm text-amber-900">
+                      <Icon name="alert" className="h-4 w-4 shrink-0" /> Aucun agent lié à l’IM reconnu. Vérifiez l’IM et sélectionnez l’agent manuellement.
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-2 rounded-xl border border-[#E5E5EA] bg-[#FAFAF8] p-3 text-xs sm:grid-cols-2">
+                    <p><span className="font-semibold">IM reconnu :</span> {resultatScan.donnees_extraites.im || 'Non reconnu'}</p>
+                    <p><span className="font-semibold">Numéro :</span> {resultatScan.donnees_extraites.numero_decision || 'Non reconnu'}</p>
+                    <p><span className="font-semibold">Indice :</span> {resultatScan.donnees_extraites.indice ?? 'Non reconnu'}</p>
+                    <p><span className="font-semibold">Année(s) :</span> {resultatScan.donnees_extraites.annees_titre || (resultatScan.donnees_extraites.annees?.join(', ') || 'Non reconnue(s)')}</p>
+                  </div>
+
+                  {resultatScan.numero_deja_utilise && (
+                    <div role="alert" className="rounded-xl border border-red-300 bg-red-50 px-3.5 py-3 text-sm text-red-800">
+                      <strong>Attention : ce numéro de décision existe déjà.</strong> Vérifiez le document et ne l’enregistrez pas une deuxième fois avec le même numéro.
+                    </div>
+                  )}
+
+                  {(resultatScan.donnees_extraites.champs_manquants?.length ?? 0) > 0 && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-sm text-amber-900">
+                      <p className="font-semibold">Champs à vérifier ou compléter</p>
+                      <ul className="mt-1 list-inside list-disc">
+                        {resultatScan.donnees_extraites.champs_manquants?.map((champManquant) => <li key={champManquant}>{champManquant}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {(resultatScan.donnees_extraites.avertissements?.length ?? 0) > 0 && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-sm text-amber-900">
+                      <p className="font-semibold">Avertissements de lecture OCR</p>
+                      <ul className="mt-1 list-inside list-disc">
+                        {resultatScan.donnees_extraites.avertissements?.map((avertissement) => <li key={avertissement}>{avertissement}</li>)}
+                      </ul>
                     </div>
                   )}
                   {resultatScan.donnees_extraites.texte_brut && (
@@ -1334,7 +1429,7 @@ export function DecisionsRHPage() {
                 </div>
                 <div className="group">
                   <label htmlFor="annees_titre" className={etiquette}>Année(s) au titre du congé</label>
-                  <input id="annees_titre" required placeholder="2026 ou 2025-2026" value={formulaire.annees_titre} onChange={(e) => modifierChamp('annees_titre', e.target.value)} className={champ} />
+                  <input id="annees_titre" required inputMode="text" maxLength={80} pattern="[0-9 ,\-]+" placeholder="2026 ou 2025-2026" value={formulaire.annees_titre} onChange={(e) => modifierChamp('annees_titre', e.target.value)} className={champ} />
                 </div>
               </div>
             </GroupeFormulaire>
@@ -1374,7 +1469,7 @@ export function DecisionsRHPage() {
                 <div className="group"><label htmlFor="budget" className={etiquette}>Budget</label><input id="budget" value={formulaire.budget} onChange={(e) => modifierChamp('budget', e.target.value)} className={champ} /></div>
                 <div className="group"><label htmlFor="imputation_budgetaire" className={etiquette}>Imputation budgétaire</label><input id="imputation_budgetaire" value={formulaire.imputation_budgetaire} onChange={(e) => modifierChamp('imputation_budgetaire', e.target.value)} className={champ} /></div>
                 <div className="group"><label htmlFor="corps_grade" className={etiquette}>Corps / grade</label><input id="corps_grade" value={formulaire.corps_grade} onChange={(e) => modifierChamp('corps_grade', e.target.value)} className={champ} /></div>
-                <div className="group"><label htmlFor="indice" className={etiquette}>Indice</label><input id="indice" type="number" min="0" value={formulaire.indice} onChange={(e) => modifierChamp('indice', e.target.value)} className={champ} /></div>
+                <div className="group"><label htmlFor="indice" className={etiquette}>Indice</label><input id="indice" type="number" min="0" max="99999999" step="1" inputMode="numeric" value={formulaire.indice} onChange={(e) => modifierChamp('indice', e.target.value)} onKeyDown={(e) => { if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault() }} className={champ} /></div>
               </div>
             </GroupeFormulaire>
 
@@ -1388,6 +1483,54 @@ export function DecisionsRHPage() {
           </form>
         </div>
       </Tiroir>
+
+      {confirmation && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-[#0A0A0A]/45 p-4 backdrop-blur-sm">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rh-confirmation-title"
+            aria-describedby="rh-confirmation-description"
+            className="men-modal w-full max-w-md rounded-2xl border border-white/80 bg-white p-5 shadow-[0_24px_70px_-20px_rgba(10,10,10,.45)] sm:p-6"
+          >
+            <div className="flex items-start gap-3">
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#1B1BFF]/10 text-[#1B1BFF] ring-8 ring-[#1B1BFF]/5">
+                <Icon name={confirmation.type === 'activation' ? 'check' : 'refresh'} className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <h2 id="rh-confirmation-title" className="men-serif text-xl font-semibold text-[#0A0A0A]">
+                  {confirmation.type === 'activation' ? 'Confirmer l’activation des droits' : 'Confirmer le report des reliquats'}
+                </h2>
+                <p id="rh-confirmation-description" className="mt-2 text-sm leading-6 text-[#52525B]">
+                  {confirmation.type === 'activation'
+                    ? `La décision n° ${confirmation.decision.numero_decision} sera validée et les droits de congé correspondants seront initialisés.`
+                    : `Les reliquats non consommés de ${confirmation.annee} seront reportés sur ${confirmation.annee + 1}. Cette opération mettra à jour les soldes concernés.`}
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                disabled={actionEnCours !== null || reportEnCours}
+                onClick={() => setConfirmation(null)}
+                className={btnContour}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={actionEnCours !== null || reportEnCours}
+                onClick={() => void executerConfirmation()}
+                className={btnPrimaire}
+              >
+                {actionEnCours !== null || reportEnCours
+                  ? 'Traitement en cours…'
+                  : confirmation.type === 'activation' ? 'Activer les droits' : 'Effectuer le report'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </CoquilleRH>
   )
 }

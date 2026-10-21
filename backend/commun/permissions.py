@@ -119,18 +119,29 @@ class EstAdmin(BasePermission):
         )
 
 
-class EstValideur(BasePermission):
-    """Autorise les chefs de service, les RH responsables de service et les directeurs."""
+MSG_SANS_SERVICE = (
+    "Votre fiche personnel n'est rattachée à aucun service : "
+    "demandez à l'administrateur de vous en affecter un."
+)
 
-    message = "Action réservée au chef de service, au responsable RH de service ou au directeur."
+
+class EstValideur(BasePermission):
+    """Autorise les chefs de service, les RH et les directeurs ayant une fiche personnel.
+
+    Le rattachement à un service n'est volontairement pas exigé ici : il est contrôlé
+    par chaque vue, qui renvoie alors un message précis (ou une liste vide pour la RH)
+    au lieu d'un refus générique qui accuse à tort le rôle du compte.
+    """
+
+    message = (
+        "Action réservée au chef de service, au responsable RH ou au directeur "
+        "dont le compte est lié à une fiche personnel."
+    )
 
     def has_permission(self, request, view):
         role = role_de(request.user)
-        if role == Role.DIRECTEUR:
+        if role in (Role.DIRECTEUR, Role.CHEF_SERVICE, Role.RH):
             return personnel_de(request.user) is not None
-        if role in (Role.CHEF_SERVICE, Role.RH):
-            personnel = personnel_de(request.user)
-            return personnel is not None and personnel.service_id is not None
         return False
 
 

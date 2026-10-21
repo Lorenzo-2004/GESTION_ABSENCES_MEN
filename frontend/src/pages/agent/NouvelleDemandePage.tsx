@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent, ReactNode } from 'react'
-import { isAxiosError } from 'axios'
+import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { Link, Navigate, useLocation, useSearchParams } from 'react-router'
 
 import { useAuth } from '../../contexts/useAuth'
 import { peutAccederEspaceAgent } from '../../lib/roles'
+import { typePossedeFicheOfficielle } from '../../services/congesService'
 import {
   creerDemandeConge,
   type TypeAbsence,
@@ -20,6 +20,8 @@ import {
   CoquilleService,
   type VueAgent,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
+import { normaliserEntier, normaliserTexteLibre, texteContientLettres } from '../../lib/validationChamps'
 
 const TYPES_ABSENCE: { valeur: TypeAbsence; libelle: string }[] = [
   { valeur: 'CONGE_ANNUEL', libelle: 'Congé annuel' },
@@ -31,11 +33,19 @@ const TYPES_ABSENCE: { valeur: TypeAbsence; libelle: string }[] = [
   { valeur: 'REPOS_SANITAIRE', libelle: 'Repos sanitaire' },
 ]
 
-const TYPES_MOTIF_OBLIGATOIRE: TypeAbsence[] = ['PERMISSION', 'AUTORISATION']
-const TYPES_JUSTIFICATIF_OBLIGATOIRE: TypeAbsence[] = ['MISSION', 'REPOS_SANITAIRE', 'MATERNITE', 'PATERNITE']
+function typesAbsenceSelonProfil(statut?: string | null, sexe?: string | null) {
+  const estStagiaire = statut?.toUpperCase() === 'STAGIAIRE'
+  const sexeCode = sexe?.trim().toUpperCase()
+  return TYPES_ABSENCE.filter(({ valeur }) => {
+    if (estStagiaire && ['CONGE_ANNUEL', 'MATERNITE', 'PATERNITE'].includes(valeur)) return false
+    if (['M', 'MASCULIN'].includes(sexeCode ?? '') && valeur === 'MATERNITE') return false
+    if (['F', 'FEMININ', 'FÉMININ'].includes(sexeCode ?? '') && valeur === 'PATERNITE') return false
+    return true
+  })
+}
 
 const EXTENSIONS_AUTORISEES = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff']
-const TAILLE_MAXIMALE = 5 * 1024 * 1024
+const TAILLE_MAXIMALE = 15 * 1024 * 1024
 
 /* ------------------------------------------------------------------ */
 /*  Animations                                                         */
@@ -98,6 +108,17 @@ const TONS = {
   vert: { chip: 'bg-[#00FF9C]/10 text-[#0A0A0A]', barre: '#00FF9C' },
   ardoise: { chip: 'bg-slate-500/10 text-[#86868B]', barre: '#86868B' },
 } as const
+
+interface PointSignature {
+  x: number
+  y: number
+  temps: number
+}
+
+interface PointVisuelSignature {
+  x: number
+  y: number
+}
 
 interface FormulaireDemande {
   type_absence: TypeAbsence
@@ -162,25 +183,15 @@ function afficherDateISO(dateISO: string): string {
 }
 
 function messageErreur(erreur: unknown): string {
-  if (!isAxiosError(erreur)) return 'Une erreur inattendue est survenue.'
-  const statutHTTP = erreur.response?.status
-  const donnees = erreur.response?.data
+  return messageErreurUtilisateur(erreur, 'La demande n’a pas pu être enregistrée. Vérifiez les informations saisies puis réessayez.')
+}
 
-  if (statutHTTP === 401) return 'Votre session a expiré. Reconnectez-vous avant de réessayer.'
-  if (statutHTTP === 403) return 'Vous n’êtes pas autorisé à soumettre cette demande.'
-  if (typeof donnees?.detail === 'string') return donnees.detail
+function libelleTypeAbsence(type: TypeAbsence): string {
+  return TYPES_ABSENCE.find((item) => item.valeur === type)?.libelle ?? type.replace(/_/g, " ")
+}
 
-  const erreurs = donnees?.erreurs
-  if (erreurs && typeof erreurs === 'object') {
-    const messages = Object.entries(erreurs as Record<string, unknown>).flatMap(([champErreur, valeur]) => {
-      const liste = Array.isArray(valeur) ? valeur : [valeur]
-      return liste.filter((item) => typeof item === 'string').map((item) => `${champErreur} : ${item}`)
-    })
-    if (messages.length > 0) return messages.join(' ')
-  }
-
-  if (!erreur.response) return 'Impossible de joindre le serveur. Vérifiez que Django fonctionne.'
-  return 'La demande n’a pas pu être enregistrée. Vérifiez les informations saisies.'
+function motifAutomatiquePourType(type: TypeAbsence): boolean {
+  return !typePossedeFicheOfficielle(type)
 }
 
 function initialiserFormulaire(): FormulaireDemande {
@@ -272,6 +283,7 @@ export function NouvelleDemandePage() {
   const dansEspaceService = pathname.startsWith('/app/chef-service')
   const estResponsableService = utilisateur?.role === 'ROLE_CHEF_SERVICE' || utilisateur?.role === 'ROLE_RH'
   const serviceId = utilisateur?.personnel?.service ?? null
+  const demandePourUnAgent = dansEspaceService && estResponsableService && personnelCibleId > 0
   const [vue, setVue] = useState<VueAgent>('nouvelle-demande')
 
   const [formulaire, setFormulaire] = useState<FormulaireDemande>(initialiserFormulaire)
@@ -281,8 +293,19 @@ export function NouvelleDemandePage() {
   const [envoiEnCours, setEnvoiEnCours] = useState(false)
   const [personnelCible, setPersonnelCible] = useState<PersonnelEquipe | null>(null)
   const [chargementPersonnelCible, setChargementPersonnelCible] = useState(false)
+  const [signatureTracee, setSignatureTracee] = useState(false)
+  const [confirmationSignatureDeleguee, setConfirmationSignatureDeleguee] = useState(false)
+  const signatureCanvasRef = useRef<HTMLCanvasElement>(null)
+  const signatureTraitEnCours = useRef(false)
+  const signatureDernierPoint = useRef<PointSignature | null>(null)
+  const signatureDernierMilieu = useRef<PointVisuelSignature | null>(null)
+  const signatureVitesse = useRef(0)
+  const signatureHistorique = useRef<ImageData[]>([])
+  const signatureNombreTraits = useRef(0)
 
   const referenceFichier = useRef<HTMLInputElement>(null)
+  const personnelConcerne = demandePourUnAgent ? personnelCible : utilisateur?.personnel
+  const typesAbsenceDisponibles = typesAbsenceSelonProfil(personnelConcerne?.statut, personnelConcerne?.sexe)
 
   useEffect(() => {
     if (!dansEspaceService || !estResponsableService || personnelCibleId <= 0) {
@@ -320,6 +343,30 @@ export function NouvelleDemandePage() {
     return () => { actif = false }
   }, [dansEspaceService, estResponsableService, personnelCibleId, serviceId])
 
+  useEffect(() => {
+    const typesAutorises = typesAbsenceSelonProfil(personnelConcerne?.statut, personnelConcerne?.sexe)
+    setFormulaire((precedent) => {
+      if (typesAutorises.some((type) => type.valeur === precedent.type_absence)) return precedent
+      const nouveauType = typesAutorises[0]?.valeur ?? 'PERMISSION'
+      return {
+        ...precedent,
+        type_absence: nouveauType,
+        motif: motifAutomatiquePourType(nouveauType) ? libelleTypeAbsence(nouveauType) : '',
+        date_debut: '',
+        date_fin: '',
+        date_evenement_prevue: '',
+      }
+    })
+  }, [personnelConcerne?.id_personnel, personnelConcerne?.statut, personnelConcerne?.sexe])
+
+  useEffect(() => {
+    if (!motifAutomatiquePourType(formulaire.type_absence)) return
+    const motifAutomatique = libelleTypeAbsence(formulaire.type_absence)
+    setFormulaire((precedent) => precedent.motif === motifAutomatique
+      ? precedent
+      : { ...precedent, motif: motifAutomatique })
+  }, [formulaire.type_absence])
+
   if (chargement) {
     return (
       <div className="grid min-h-screen place-items-center bg-[#FAFAF8]">
@@ -331,10 +378,16 @@ export function NouvelleDemandePage() {
   if (!utilisateur) return <Navigate to="/connexion" replace />
   if (!peutAccederEspaceAgent(utilisateur.role)) return <Navigate to="/app" replace />
 
-  const demandePourUnAgent = dansEspaceService && estResponsableService && personnelCibleId > 0
-  const nombreJours = joursCalendaires(formulaire.date_debut, formulaire.date_fin)
-  const motifObligatoire = TYPES_MOTIF_OBLIGATOIRE.includes(formulaire.type_absence)
-  const justificatifObligatoire = TYPES_JUSTIFICATIF_OBLIGATOIRE.includes(formulaire.type_absence)
+  const congeFamilial = formulaire.type_absence === 'MATERNITE' || formulaire.type_absence === 'PATERNITE'
+  const ficheOfficielleNecessaire = typePossedeFicheOfficielle(formulaire.type_absence)
+  const dureeFamiliale = formulaire.type_absence === 'MATERNITE' ? 90 : formulaire.type_absence === 'PATERNITE' ? 15 : null
+  const dateDebutCalculee = congeFamilial ? formulaire.date_evenement_prevue : formulaire.date_debut
+  const dateFinCalculee = congeFamilial
+    ? formulaire.date_evenement_prevue && dureeFamiliale
+      ? ajouterJoursISO(formulaire.date_evenement_prevue, dureeFamiliale - 1)
+      : ''
+    : formulaire.date_fin
+  const nombreJours = joursCalendaires(dateDebutCalculee, dateFinCalculee)
   const dateDuJour = dateLocaleISO(new Date())
   const debutCongeAnnuelMin = ajouterJoursISO(dateDuJour, 14)
   const debutCongeAnnuelMax = ajouterJoursISO(dateDuJour, 30)
@@ -347,7 +400,25 @@ export function NouvelleDemandePage() {
     : ajouterJoursISO(dateDuJour, 30)
 
   function modifierChamp<K extends keyof FormulaireDemande>(cle: K, valeur: FormulaireDemande[K]) {
-    setFormulaire((precedent) => ({ ...precedent, [cle]: valeur }))
+    if (cle === 'type_absence') {
+      const type = valeur as TypeAbsence
+      setFormulaire((precedent) => ({
+        ...precedent,
+        type_absence: type,
+        motif: motifAutomatiquePourType(type) ? libelleTypeAbsence(type) : '',
+      }))
+      setErreur('')
+      setSucces('')
+      return
+    }
+
+    let valeurSecurisee = valeur
+    if (typeof valeur === 'string') {
+      if (cle === 'annee_titre') valeurSecurisee = normaliserEntier(valeur, 4) as unknown as FormulaireDemande[K]
+      else if (cle === 'motif' && !motifAutomatiquePourType(formulaire.type_absence)) valeurSecurisee = normaliserTexteLibre(valeur, true) as unknown as FormulaireDemande[K]
+      else if (cle === 'lieu_jouissance') valeurSecurisee = normaliserTexteLibre(valeur).trimStart() as unknown as FormulaireDemande[K]
+    }
+    setFormulaire((precedent) => ({ ...precedent, [cle]: valeurSecurisee }))
     setErreur('')
     setSucces('')
   }
@@ -366,10 +437,151 @@ export function NouvelleDemandePage() {
     }
     if (selection.size > TAILLE_MAXIMALE) {
       setFichier(null); evenement.target.value = ''
-      setErreur('Le justificatif ne doit pas dépasser 5 Mo.')
+      setErreur('Le justificatif ne doit pas dépasser 15 Mo.')
       return
     }
     setFichier(selection)
+  }
+
+  function pointDepuisEvenement(event: ReactPointerEvent<HTMLCanvasElement>): PointSignature {
+    const canvas = event.currentTarget
+    const cadre = canvas.getBoundingClientRect()
+    return {
+      x: ((event.clientX - cadre.left) / Math.max(cadre.width, 1)) * canvas.width,
+      y: ((event.clientY - cadre.top) / Math.max(cadre.height, 1)) * canvas.height,
+      temps: performance.now(),
+    }
+  }
+
+  function commencerSignature(event: ReactPointerEvent<HTMLCanvasElement>) {
+    const canvas = event.currentTarget
+    const contexte = canvas.getContext('2d')
+    if (!contexte || signatureTraitEnCours.current) return
+
+    try {
+      signatureHistorique.current.push(contexte.getImageData(0, 0, canvas.width, canvas.height))
+    } catch {
+      setErreur('Impossible de préparer la signature. Rechargez le formulaire puis réessayez.')
+      return
+    }
+
+    // Une nouvelle signature invalide l'historique de rétablissement.
+    contexte.strokeStyle = '#111827'
+    contexte.fillStyle = '#111827'
+    contexte.lineCap = 'round'
+    contexte.lineJoin = 'round'
+    contexte.lineWidth = 2.6
+
+    const point = pointDepuisEvenement(event)
+    signatureDernierPoint.current = point
+    signatureDernierMilieu.current = { x: point.x, y: point.y }
+    signatureVitesse.current = 0
+    signatureTraitEnCours.current = true
+
+    // Un toucher immobile produit un point lisible plutôt qu'une signature vide.
+    contexte.beginPath()
+    contexte.arc(point.x, point.y, 1.6, 0, Math.PI * 2)
+    contexte.fill()
+
+    try { canvas.setPointerCapture(event.pointerId) } catch { /* Capture facultative selon le navigateur. */ }
+    setSignatureTracee(true)
+    setConfirmationSignatureDeleguee(false)
+    setErreur('')
+    setSucces('')
+    event.preventDefault()
+  }
+
+  function continuerSignature(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!signatureTraitEnCours.current) return
+    const canvas = event.currentTarget
+    const contexte = canvas.getContext('2d')
+    const precedent = signatureDernierPoint.current
+    const milieuPrecedent = signatureDernierMilieu.current
+    if (!contexte || !precedent || !milieuPrecedent) return
+
+    const point = pointDepuisEvenement(event)
+    const dx = point.x - precedent.x
+    const dy = point.y - precedent.y
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    if (distance < 0.4) return
+
+    // Interpolation quadratique + largeur variable selon la vitesse : le trait reste fluide
+    // même lorsque la souris ou le doigt envoie peu de points.
+    const duree = Math.max(point.temps - precedent.temps, 1)
+    const vitesseInstantanee = distance / duree
+    signatureVitesse.current = signatureVitesse.current * 0.65 + vitesseInstantanee * 0.35
+    const largeur = Math.max(1.25, Math.min(3.4, 3.5 - signatureVitesse.current * 2.2))
+    const milieu = { x: (precedent.x + point.x) / 2, y: (precedent.y + point.y) / 2 }
+
+    contexte.beginPath()
+    contexte.moveTo(milieuPrecedent.x, milieuPrecedent.y)
+    contexte.quadraticCurveTo(precedent.x, precedent.y, milieu.x, milieu.y)
+    contexte.strokeStyle = '#111827'
+    contexte.lineWidth = largeur
+    contexte.lineCap = 'round'
+    contexte.lineJoin = 'round'
+    contexte.stroke()
+
+    signatureDernierPoint.current = point
+    signatureDernierMilieu.current = milieu
+    event.preventDefault()
+  }
+
+  function terminerSignature(event?: ReactPointerEvent<HTMLCanvasElement>) {
+    if (signatureTraitEnCours.current) {
+      const canvas = event?.currentTarget ?? signatureCanvasRef.current
+      const contexte = canvas?.getContext('2d')
+      const dernierPoint = signatureDernierPoint.current
+      const dernierMilieu = signatureDernierMilieu.current
+      if (contexte && dernierPoint && dernierMilieu) {
+        contexte.beginPath()
+        contexte.moveTo(dernierMilieu.x, dernierMilieu.y)
+        contexte.lineTo(dernierPoint.x, dernierPoint.y)
+        contexte.lineWidth = Math.max(1.25, Math.min(3.4, 3.5 - signatureVitesse.current * 2.2))
+        contexte.lineCap = 'round'
+        contexte.strokeStyle = '#111827'
+        contexte.stroke()
+      }
+      signatureNombreTraits.current += 1
+    }
+    signatureTraitEnCours.current = false
+    signatureDernierPoint.current = null
+    signatureDernierMilieu.current = null
+    signatureVitesse.current = 0
+    if (event) {
+      try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* Capture déjà libérée. */ }
+    }
+  }
+
+  function annulerDernierTraitSignature() {
+    if (signatureTraitEnCours.current) terminerSignature()
+    const canvas = signatureCanvasRef.current
+    const contexte = canvas?.getContext('2d')
+    const imagePrecedente = signatureHistorique.current.pop()
+    if (!canvas || !contexte || !imagePrecedente) return
+
+    contexte.putImageData(imagePrecedente, 0, 0)
+    signatureNombreTraits.current = Math.max(0, signatureNombreTraits.current - 1)
+    setSignatureTracee(signatureNombreTraits.current > 0)
+    setConfirmationSignatureDeleguee(false)
+    setErreur('')
+    setSucces('')
+  }
+
+  function effacerSignature() {
+    const canvas = signatureCanvasRef.current
+    const contexte = canvas?.getContext('2d')
+    if (canvas && contexte) contexte.clearRect(0, 0, canvas.width, canvas.height)
+    signatureHistorique.current = []
+    signatureNombreTraits.current = 0
+    signatureDernierPoint.current = null
+    signatureDernierMilieu.current = null
+    signatureVitesse.current = 0
+    signatureTraitEnCours.current = false
+    setSignatureTracee(false)
+    setConfirmationSignatureDeleguee(false)
+    setErreur('')
+    setSucces('')
   }
 
   async function soumettre(event: FormEvent<HTMLFormElement>) {
@@ -381,21 +593,35 @@ export function NouvelleDemandePage() {
       setErreur('Vérifiez le personnel concerné avant d’enregistrer la demande.')
       return
     }
-    if (!formulaire.date_debut || !formulaire.date_fin || nombreJoursInvalide()) {
+    if (!congeFamilial && (!formulaire.date_debut || !formulaire.date_fin || nombreJoursInvalide())) {
       setErreur('Vérifiez les dates de début et de fin.')
       return
     }
     const delaiAvantDebut = joursEntreISO(dateDuJour, formulaire.date_debut)
     if (formulaire.type_absence === 'CONGE_ANNUEL' && (delaiAvantDebut === null || delaiAvantDebut < 14 || delaiAvantDebut > 30)) {
-      setErreur(`Le congé annuel doit être déposé entre 14 et 30 jours avant son début (RG-11). Choisissez une date entre le ${afficherDateISO(debutCongeAnnuelMin)} et le ${afficherDateISO(debutCongeAnnuelMax)}.`)
+      setErreur(`Le congé annuel doit être déposé entre 14 et 30 jours avant sa date de début. Choisissez une date entre le ${afficherDateISO(debutCongeAnnuelMin)} et le ${afficherDateISO(debutCongeAnnuelMax)}.`)
       return
     }
     if (formulaire.type_absence === 'MISSION' && (delaiAvantDebut === null || delaiAvantDebut < 7)) {
-      setErreur(`Une mission doit être déposée au moins 7 jours avant son début (RG-11). Choisissez une date à partir du ${afficherDateISO(debutMissionMin)}.`)
+      setErreur(`Une mission doit être annoncée au moins 7 jours avant son début. Choisissez une date à partir du ${afficherDateISO(debutMissionMin)}.`)
       return
     }
-    if (motifObligatoire && !formulaire.motif.trim()) {
-      setErreur('Le motif est obligatoire pour ce type de demande.')
+    const motifAutomatique = motifAutomatiquePourType(formulaire.type_absence)
+    const motifDemande = motifAutomatique ? libelleTypeAbsence(formulaire.type_absence) : formulaire.motif.trim()
+    if (!motifDemande) {
+      setErreur('Renseignez le motif de votre demande.')
+      return
+    }
+    if (!formulaire.lieu_jouissance.trim()) {
+      setErreur('Le lieu de jouissance est obligatoire pour enregistrer la demande ou l’annonce.')
+      return
+    }
+    if (!motifAutomatique && !texteContientLettres(formulaire.motif)) {
+      setErreur('Décrivez le motif avec des mots ; une saisie composée uniquement de chiffres ou de symboles n’est pas acceptée.')
+      return
+    }
+    if (!texteContientLettres(formulaire.lieu_jouissance)) {
+      setErreur('Indiquez un lieu valide contenant au moins une lettre.')
       return
     }
     if (formulaire.type_absence === 'CONGE_ANNUEL') {
@@ -406,9 +632,8 @@ export function NouvelleDemandePage() {
       }
     }
 
-    const congeFamilial = formulaire.type_absence === 'MATERNITE' || formulaire.type_absence === 'PATERNITE'
     if (congeFamilial && !formulaire.date_evenement_prevue) {
-      setErreur('La date prévue de l’accouchement est obligatoire pour une demande de maternité ou de paternité (RG-11).')
+      setErreur('La date prévue d’accouchement est obligatoire pour une demande de maternité ou de paternité.')
       return
     }
     if (congeFamilial) {
@@ -420,25 +645,27 @@ export function NouvelleDemandePage() {
         const intervalle = formulaire.type_absence === 'MATERNITE'
           ? `entre le ${afficherDateISO(dateEvenementMin)} et le ${afficherDateISO(dateEvenementMax)}`
           : `entre le ${afficherDateISO(dateEvenementMin)} et le ${afficherDateISO(dateEvenementMax)}`
-        setErreur(`La date prévue de l’accouchement ne respecte pas le délai réglementaire (RG-11). Elle doit être ${intervalle}.`)
+        setErreur(`La date prévue d’accouchement doit être ${intervalle}.`)
         return
       }
     }
 
-    const dureeReglementaire = formulaire.type_absence === 'MATERNITE'
-      ? 90
-      : formulaire.type_absence === 'PATERNITE'
-        ? 15
-        : null
-    if (dureeReglementaire !== null && nombreJours !== dureeReglementaire) {
-      setErreur(`La durée réglementaire de ce congé est de ${dureeReglementaire} jours calendaires. Ajustez les dates de début et de fin.`)
+    // Une signature dessinée est requise avant chaque nouvelle soumission.
+    if (!signatureTracee || !signatureCanvasRef.current) {
+      setErreur('Veuillez signer dans la zone prévue avant de soumettre la demande.')
+      return
+    }
+    if (demandePourUnAgent && !confirmationSignatureDeleguee) {
+      setErreur('Confirmez que la signature présente est bien celle du demandeur concerné.')
+      return
+    }
+    const signatureImage = signatureCanvasRef.current.toDataURL('image/png')
+    if (!signatureImage.startsWith('data:image/png;base64,') || signatureImage.length < 150) {
+      setErreur('La signature semble vide. Signez dans la zone puis réessayez.')
       return
     }
 
-    if (justificatifObligatoire && !fichier) {
-      setErreur('Un justificatif est obligatoire pour ce type d’absence.')
-      return
-    }
+    // La période familiale est calculée automatiquement à partir de la date prévue.
 
     setEnvoiEnCours(true)
     try {
@@ -451,19 +678,35 @@ export function NouvelleDemandePage() {
           ? { date_evenement_prevue: formulaire.date_evenement_prevue }
           : {}),
         ...(demandePourUnAgent && personnelCible ? { personnel: personnelCible.id_personnel } : {}),
-        motif: formulaire.motif.trim(),
-        date_debut: formulaire.date_debut,
-        date_fin: formulaire.date_fin,
+        motif: motifDemande,
+        ...(!congeFamilial ? {
+          date_debut: formulaire.date_debut,
+          date_fin: formulaire.date_fin,
+        } : {}),
         lieu_jouissance: formulaire.lieu_jouissance.trim(),
+        signature_agent: signatureImage,
         fichier_justificatif: fichier,
       })
 
       const reference = resultat.numero_enregistrement || `Demande #${resultat.id_demande}`
       const sujetDemande = demandePourUnAgent && personnelCible ? `La demande pour ${personnelCible.nom_complet}` : 'Votre demande'
-      setSucces(`${sujetDemande} ${reference} a été enregistrée. Statut : ${resultat.statut_libelle || 'En attente'}.`)
+      setSucces(`${sujetDemande} a bien été signée et envoyée. Référence : ${reference}. État : ${resultat.statut_libelle || 'En attente'}.`)
 
       setFormulaire(initialiserFormulaire())
       setFichier(null)
+      const canvasSignature = signatureCanvasRef.current
+      const contexteSignature = canvasSignature?.getContext('2d')
+      if (canvasSignature && contexteSignature) {
+        contexteSignature.clearRect(0, 0, canvasSignature.width, canvasSignature.height)
+      }
+      signatureHistorique.current = []
+      signatureNombreTraits.current = 0
+      signatureDernierPoint.current = null
+      signatureDernierMilieu.current = null
+      signatureVitesse.current = 0
+      signatureTraitEnCours.current = false
+      setSignatureTracee(false)
+      setConfirmationSignatureDeleguee(false)
       if (referenceFichier.current) referenceFichier.current.value = ''
     } catch (cause) {
       setErreur(messageErreur(cause))
@@ -489,16 +732,22 @@ export function NouvelleDemandePage() {
           ? demandePourUnAgent && personnelCible
             ? `Demande pour ${personnelCible.nom_complet}`
             : 'Nouvelle demande'
-          : 'Nouvelle demande de congé'
+          : 'Nouvelle demande'
       }
       description={
-        dansEspaceService
-          ? demandePourUnAgent
-            ? 'Saisie d’une demande pour un membre de votre service'
-            : 'Demande personnelle transmise directement à la direction'
-          : estResponsableService
-            ? 'Déposez votre demande personnelle ; elle sera transmise directement au Directeur.'
-            : 'Remplissez le formulaire officiel de demande d’absence'
+        ficheOfficielleNecessaire
+          ? dansEspaceService
+            ? demandePourUnAgent
+              ? 'Saisie d’une demande officielle pour un membre de votre service'
+              : 'Demande personnelle transmise directement à la direction'
+            : estResponsableService
+              ? 'Déposez votre demande officielle ; elle sera transmise directement au Directeur.'
+              : 'Complétez la fiche officielle pour le congé annuel, la permission ou l’autorisation d’absence.'
+          : demandePourUnAgent
+            ? 'Saisie d’une annonce pour un membre de votre service ; aucune fiche officielle n’est requise.'
+            : dansEspaceService
+              ? 'Votre annonce personnelle sera transmise directement au Directeur, sans fiche officielle.'
+              : 'Déclarez votre absence ou votre événement ; aucune fiche officielle n’est requise pour ce type.'
       }
       actions={
         <Link to={dansEspaceService ? '/app/chef-service' : '/app/agent/mes-demandes'} className={`${btnContour} !h-9`}>
@@ -535,12 +784,14 @@ export function NouvelleDemandePage() {
             <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-[0.05] [background-image:linear-gradient(white_1px,transparent_1px),linear-gradient(90deg,white_1px,transparent_1px)] [background-size:36px_36px]" />
 
             <div className="relative flex h-full min-w-0 flex-col">
-              <p className="inline-flex w-fit items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
-                <Icon name="file" className="h-3.5 w-3.5" />
-                {dansEspaceService ? (utilisateur.role === 'ROLE_RH' ? 'Espace Service RH' : 'Espace Chef de service') : 'Espace personnel'}
-              </p>
+              {dansEspaceService && (
+                <p className="inline-flex w-fit items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
+                  <Icon name="file" className="h-3.5 w-3.5" />
+                  {utilisateur.role === 'ROLE_RH' ? 'Espace Service RH' : 'Espace Chef de service'}
+                </p>
+              )}
               <h2 className="men-serif mt-5 max-w-lg text-3xl font-normal leading-[1.1] sm:text-4xl">
-                {demandePourUnAgent && personnelCible ? `Demande pour ${personnelCible.nom_complet}` : 'Nouvelle demande de congé'}
+                {demandePourUnAgent && personnelCible ? `Demande pour ${personnelCible.nom_complet}` : 'Nouvelle demande'}
               </h2>
               <p className="mt-4 max-w-md text-sm leading-relaxed text-white/75">
                 {demandePourUnAgent
@@ -604,10 +855,13 @@ export function NouvelleDemandePage() {
                   onChange={(event) => modifierChamp('type_absence', event.target.value as TypeAbsence)}
                   className={champ}
                 >
-                  {TYPES_ABSENCE.map((type) => (
+                  {typesAbsenceDisponibles.map((type) => (
                     <option key={type.valeur} value={type.valeur}>{type.libelle}</option>
                   ))}
                 </select>
+                {personnelConcerne?.statut?.toUpperCase() === 'STAGIAIRE' && (
+                  <p className="mt-1.5 text-xs font-medium text-amber-800">Le statut stagiaire ne permet pas les congés annuels, de maternité ou de paternité.</p>
+                )}
               </div>
 
               {formulaire.type_absence === 'CONGE_ANNUEL' && (
@@ -625,10 +879,12 @@ export function NouvelleDemandePage() {
                     required
                     value={formulaire.annee_titre}
                     onChange={(event) => modifierChamp('annee_titre', event.target.value)}
+                    onKeyDown={(event) => { if (['e', 'E', '+', '-', '.', ','].includes(event.key)) event.preventDefault() }}
+                    onPaste={(event) => { const texte = event.clipboardData.getData('text'); if (/\D/.test(texte)) { event.preventDefault(); modifierChamp('annee_titre', texte.replace(/\D/g, '').slice(0, 4)) } }}
                     className={champ}
                   />
                   <p className="mt-1.5 text-xs font-medium text-[#86868B]">
-                    Choisissez l’année de droits à imputer. Le backend vérifiera la décision RH et le solde activé pour cette année.
+                    Choisissez l’année de droits à utiliser. La demande sera vérifiée selon la décision RH et le solde disponibles pour cette année.
                   </p>
                 </div>
               )}
@@ -650,48 +906,79 @@ export function NouvelleDemandePage() {
                   />
                   <p className="mt-1.5 text-xs font-medium text-[#86868B]">
                     {formulaire.type_absence === 'MATERNITE'
-                      ? `La date prévue doit être entre le ${afficherDateISO(dateEvenementMin)} et le ${afficherDateISO(dateEvenementMax)} (1 à 3 mois à l’avance, RG-11).`
-                      : `La date prévue doit être entre le ${afficherDateISO(dateEvenementMin)} et le ${afficherDateISO(dateEvenementMax)} (14 à 30 jours à l’avance, RG-11).`}
+                      ? `La date prévue doit être entre le ${afficherDateISO(dateEvenementMin)} et le ${afficherDateISO(dateEvenementMax)} (1 à 3 mois à l’avance).`
+                      : `La date prévue doit être entre le ${afficherDateISO(dateEvenementMin)} et le ${afficherDateISO(dateEvenementMax)} (14 à 30 jours à l’avance).`}
                   </p>
                 </div>
               )}
 
-              <div className="group">
-                <label htmlFor="date_debut" className={etiquette}>Date de début *</label>
-                <input
-                  id="date_debut"
-                  type="date"
-                  required
-                  min={formulaire.type_absence === 'CONGE_ANNUEL' ? debutCongeAnnuelMin : formulaire.type_absence === 'MISSION' ? debutMissionMin : undefined}
-                  max={formulaire.type_absence === 'CONGE_ANNUEL' ? debutCongeAnnuelMax : undefined}
-                  value={formulaire.date_debut}
-                  onChange={(event) => modifierChamp('date_debut', event.target.value)}
-                  className={champ}
-                />
-                {formulaire.type_absence === 'CONGE_ANNUEL' && (
-                  <p className="mt-1.5 text-xs font-medium text-[#86868B]">
-                    RG-11 : dépôt entre 14 et 30 jours avant le début, soit du {afficherDateISO(debutCongeAnnuelMin)} au {afficherDateISO(debutCongeAnnuelMax)}.
-                  </p>
-                )}
-                {formulaire.type_absence === 'MISSION' && (
-                  <p className="mt-1.5 text-xs font-medium text-[#86868B]">
-                    RG-11 : la mission doit être déposée au moins 7 jours avant le début, à partir du {afficherDateISO(debutMissionMin)}.
-                  </p>
-                )}
-              </div>
+              {congeFamilial ? (
+                <>
+                  <div className="group">
+                    <label htmlFor="date_debut_calculee" className={etiquette}>Date de début calculée</label>
+                    <input
+                      id="date_debut_calculee"
+                      type="date"
+                      value={dateDebutCalculee}
+                      readOnly
+                      aria-readonly="true"
+                      className={`${champ} bg-[#FAFAF8] text-[#86868B]`}
+                    />
+                    <p className="mt-1.5 text-xs font-medium text-[#86868B]">La période est calculée automatiquement à partir de la date prévue d’accouchement.</p>
+                  </div>
+                  <div className="group">
+                    <label htmlFor="date_fin_calculee" className={etiquette}>Date de fin calculée</label>
+                    <input
+                      id="date_fin_calculee"
+                      type="date"
+                      value={dateFinCalculee}
+                      readOnly
+                      aria-readonly="true"
+                      className={`${champ} bg-[#FAFAF8] text-[#86868B]`}
+                    />
+                    <p className="mt-1.5 text-xs font-medium text-[#86868B]">Durée fixe : {dureeFamiliale} jours calendaires, calculée automatiquement.</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="group">
+                    <label htmlFor="date_debut" className={etiquette}>Date de début *</label>
+                    <input
+                      id="date_debut"
+                      type="date"
+                      required
+                      min={formulaire.type_absence === 'CONGE_ANNUEL' ? debutCongeAnnuelMin : formulaire.type_absence === 'MISSION' ? debutMissionMin : undefined}
+                      max={formulaire.type_absence === 'CONGE_ANNUEL' ? debutCongeAnnuelMax : undefined}
+                      value={formulaire.date_debut}
+                      onChange={(event) => modifierChamp('date_debut', event.target.value)}
+                      className={champ}
+                    />
+                    {formulaire.type_absence === 'CONGE_ANNUEL' && (
+                      <p className="mt-1.5 text-xs font-medium text-[#86868B]">
+                        Déposez votre demande entre 14 et 30 jours avant le début, soit du {afficherDateISO(debutCongeAnnuelMin)} au {afficherDateISO(debutCongeAnnuelMax)}.
+                      </p>
+                    )}
+                    {formulaire.type_absence === 'MISSION' && (
+                      <p className="mt-1.5 text-xs font-medium text-[#86868B]">
+                        La mission doit être déposée au moins 7 jours avant le début, à partir du {afficherDateISO(debutMissionMin)}.
+                      </p>
+                    )}
+                  </div>
 
-              <div className="group">
-                <label htmlFor="date_fin" className={etiquette}>Date de fin *</label>
-                <input
-                  id="date_fin"
-                  type="date"
-                  required
-                  min={formulaire.date_debut || undefined}
-                  value={formulaire.date_fin}
-                  onChange={(event) => modifierChamp('date_fin', event.target.value)}
-                  className={champ}
-                />
-              </div>
+                  <div className="group">
+                    <label htmlFor="date_fin" className={etiquette}>Date de fin *</label>
+                    <input
+                      id="date_fin"
+                      type="date"
+                      required
+                      min={formulaire.date_debut || undefined}
+                      value={formulaire.date_fin}
+                      onChange={(event) => modifierChamp('date_fin', event.target.value)}
+                      className={champ}
+                    />
+                  </div>
+                </>
+              )}
 
               <div className="flex items-center justify-between rounded-xl border border-[#E5E5EA] bg-[#F0F0FF] px-4 py-3 md:col-span-2">
                 <p className="text-xs font-medium text-[#86868B]">Durée estimée</p>
@@ -706,31 +993,45 @@ export function NouvelleDemandePage() {
             <div className="grid grid-cols-1 gap-4">
               <div className="group">
                 <label htmlFor="motif" className={etiquette}>
-                  Motif {motifObligatoire ? '*' : <span className="text-[#86868B]">(facultatif)</span>}
+                  {motifAutomatiquePourType(formulaire.type_absence) ? 'Motif' : 'Motif *'}
                 </label>
-                <textarea
-                  id="motif"
-                  rows={4}
-                  required={motifObligatoire}
-                  value={formulaire.motif}
-                  onChange={(event) => modifierChamp('motif', event.target.value)}
-                  placeholder={motifObligatoire ? 'Expliquez le motif de votre demande…' : 'Précisions complémentaires…'}
-                  className={zoneTexte}
-                />
-                {motifObligatoire && (
-                  <p className="mt-1.5 text-xs font-medium text-[#0A0A0A]">Obligatoire pour une permission ou une autorisation.</p>
+                {motifAutomatiquePourType(formulaire.type_absence) ? (
+                  <input
+                    id="motif"
+                    type="text"
+                    value={libelleTypeAbsence(formulaire.type_absence)}
+                    readOnly
+                    aria-readonly="true"
+                    className={`${champ} bg-[#F0F0FF] font-semibold text-[#1B1BFF]`}
+                  />
+                ) : (
+                  <textarea
+                    id="motif"
+                    rows={4}
+                    required
+                    value={formulaire.motif}
+                    onChange={(event) => modifierChamp('motif', event.target.value)}
+                    placeholder="Expliquez le motif de votre demande…"
+                    className={zoneTexte}
+                  />
                 )}
+                <p className="mt-1.5 text-xs font-medium text-[#86868B]">
+                  {motifAutomatiquePourType(formulaire.type_absence)
+                    ? 'Le motif est renseigné automatiquement selon le type d’absence ; aucune justification supplémentaire n’est demandée.'
+                    : 'Ce motif sera repris dans la fiche officielle MEN.'}
+                </p>
               </div>
 
               <div className="group">
-                <label htmlFor="lieu_jouissance" className={etiquette}>Lieu de jouissance</label>
+                <label htmlFor="lieu_jouissance" className={etiquette}>Lieu de jouissance *</label>
                 <input
                   id="lieu_jouissance"
                   type="text"
                   maxLength={200}
+                  required
                   value={formulaire.lieu_jouissance}
                   onChange={(event) => modifierChamp('lieu_jouissance', event.target.value)}
-                  placeholder="Lieu où le congé sera passé, si applicable"
+                  placeholder="Lieu où le congé sera passé"
                   className={champ}
                 />
               </div>
@@ -740,19 +1041,19 @@ export function NouvelleDemandePage() {
           <GroupeFormulaire icone="upload" titre="Justificatif" ton="ardoise" retard={360}>
             <div className="group">
               <label htmlFor="fichier_justificatif" className={etiquette}>
-                Fichier joint {justificatifObligatoire ? '*' : <span className="text-[#86868B]">(facultatif)</span>}
+                Fichier joint <span className="text-[#86868B]">(facultatif)</span>
               </label>
               <input
                 ref={referenceFichier}
                 id="fichier_justificatif"
                 type="file"
                 accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff"
-                required={justificatifObligatoire}
+                
                 onChange={selectionnerFichier}
                 className="block w-full cursor-pointer rounded-xl border border-[#E5E5EA] bg-white px-3 py-2 text-sm text-[#0A0A0A] file:mr-3 file:rounded-lg file:border-0 file:bg-[#1B1BFF]/10 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-[#1B1BFF] file:transition hover:file:bg-[#1B1BFF]/20 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#1B1BFF]/15"
               />
               <p className="mt-1.5 text-xs font-medium text-[#86868B]">
-                Formats acceptés : PDF, JPG, PNG, TIF · 5 Mo max.
+                Formats acceptés : PDF, JPG, JPEG, PNG, TIF, TIFF · 15 Mo max. (facultatif)
               </p>
 
               {fichier && (
@@ -764,7 +1065,48 @@ export function NouvelleDemandePage() {
             </div>
           </GroupeFormulaire>
 
-          <div className="rh-in flex flex-col-reverse items-center gap-3 pt-4 sm:flex-row sm:justify-end" style={delai(420)}>
+          <GroupeFormulaire icone="check" titre="Signature électronique du demandeur *" ton="bleu" retard={390}>
+            <div className="space-y-3">
+              <p className="text-sm leading-6 text-[#5D5D66]">Signez dans le cadre avec votre souris ou votre doigt. Cette signature sera enregistrée avec la demande et imprimée sur la fiche officielle lorsqu’un formulaire MEN est prévu.</p>
+              <div className="overflow-hidden rounded-xl border border-[#D1D5DB] bg-white">
+                <canvas
+                  ref={signatureCanvasRef}
+                  width={1440}
+                  height={360}
+                  aria-label="Zone de signature électronique"
+                  onPointerDown={commencerSignature}
+                  onPointerMove={continuerSignature}
+                  onPointerUp={terminerSignature}
+                  onPointerCancel={terminerSignature}
+                  onLostPointerCapture={() => { signatureTraitEnCours.current = false }}
+                  className="block h-[180px] w-full cursor-crosshair touch-none bg-white"
+                />
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className={`inline-flex items-center gap-2 text-xs font-medium ${signatureTracee ? 'text-emerald-700' : 'text-[#86868B]'}`}>
+                  <span className={`h-2 w-2 rounded-full ${signatureTracee ? 'bg-emerald-500' : 'bg-[#D1D5DB]'}`} />
+                  {signatureTracee ? 'Signature tracée, prête à être envoyée' : 'Signature requise avant la soumission'}
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={annulerDernierTraitSignature} disabled={!signatureTracee} className={`${btnContour} !h-8 !px-3 !text-xs`}>
+                    <Icon name="refresh" className="h-3.5 w-3.5" /> Annuler le dernier trait
+                  </button>
+                  <button type="button" onClick={effacerSignature} disabled={!signatureTracee} className={`${btnContour} !h-8 !px-3 !text-xs`}>
+                    <Icon name="close" className="h-3.5 w-3.5" /> Effacer la signature
+                  </button>
+                </div>
+              </div>
+              {demandePourUnAgent && (
+                <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                  <input type="checkbox" checked={confirmationSignatureDeleguee} onChange={(event) => setConfirmationSignatureDeleguee(event.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-[#1B1BFF]" />
+                  <span>Je confirme que la signature tracée est celle du demandeur concerné et qu’il a donné son accord pour cette demande.</span>
+                </label>
+              )}
+              <p className="text-xs leading-5 text-[#86868B]">La date, le compte utilisé pour l’envoi et l’empreinte du fichier de signature sont conservés pour assurer la traçabilité.</p>
+            </div>
+          </GroupeFormulaire>
+
+          <div className="rh-in flex flex-col-reverse items-center gap-3 pt-4 sm:flex-row sm:justify-end" style={delai(450)}>
             <Link to={dansEspaceService ? '/app/chef-service' : '/app/agent/mes-demandes'} className={`${btnContour} w-full sm:w-auto`}>
               <Icon name="close" className="h-4 w-4" /> Annuler
             </Link>

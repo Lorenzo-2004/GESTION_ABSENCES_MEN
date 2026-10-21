@@ -25,4 +25,4 @@ Cette mise à jour reprend le langage visuel de `DecisionsRHPage.tsx` pour les e
 
 ## Vérification
 
-Le contrôle TypeScript a réussi. Le build Vite complet est à refaire sur le poste Windows après installation des dépendances avec `npm install`, puis `npm run build`.
+Le contrôle syntaxique TypeScript/TSX ne révèle pas d’erreur. Le build complet est à confirmer sur le poste Windows après `npm ci`, puis `npm run build`.

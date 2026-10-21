@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { isAxiosError } from 'axios'
 import { Navigate } from 'react-router'
 
 import { useAuth } from '../../contexts/useAuth'
@@ -14,11 +13,12 @@ import {
   CoquilleAgent,
   type VueAgent,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
 
 const TITRES_VUES: Record<VueAgent, { titre: string; description: string }> = {
   apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et soldes' },
   demandes: { titre: 'Mes demandes', description: 'Consultez vos demandes et leur état' },
-  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Remplissez le formulaire officiel' },
+  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Déposez une demande ou une annonce d’absence' },
   soldes: { titre: 'Mes soldes', description: 'Droits à congé de l’année en cours' },
   historique: { titre: 'Historique', description: 'Détail des validations' },
   profil: { titre: 'Mon profil', description: 'Informations du personnel' },
@@ -91,14 +91,7 @@ const TONS_KPI = {
 /* ------------------------------------------------------------------ */
 
 function afficherErreur(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    if (erreur.response?.status === 401) return 'Votre session a expiré. Reconnectez-vous.'
-    if (erreur.response?.status === 403) return "Vous n'êtes pas autorisé à consulter ces droits."
-    if (!erreur.response) return 'Le serveur est injoignable. Vérifiez que Django fonctionne.'
-    const detail = erreur.response.data?.detail
-    if (typeof detail === 'string') return detail
-  }
-  return 'Impossible de charger les droits pour cette année.'
+  return messageErreurUtilisateur(erreur, 'Impossible de charger vos droits à congé. Réessayez dans quelques instants.')
 }
 
 const reduit = () =>
@@ -185,6 +178,7 @@ function Donut({
                 fill="none"
                 stroke={seg.couleur}
                 strokeWidth={epaisseur}
+                strokeLinecap="butt"
                 strokeDasharray={`${pret ? trait : 0} ${c}`}
                 strokeDashoffset={-cumul}
                 transform={`rotate(-90 ${taille / 2} ${taille / 2})`}
@@ -600,7 +594,7 @@ export function MesSoldesPage() {
             </Panneau>
 
             <p className="px-2 text-center text-xs text-[#86868B]">
-              Les montants affichés proviennent du backend. Les droits et soldes définitifs restent soumis aux décisions et aux règles administratives en vigueur.
+              Les droits affichés tiennent compte des décisions RH enregistrées. Les soldes définitifs sont établis selon les règles administratives en vigueur.
             </p>
           </>
         ) : (

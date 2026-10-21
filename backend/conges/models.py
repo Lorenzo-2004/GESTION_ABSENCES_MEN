@@ -8,6 +8,7 @@ couche `conges.services` : la logique métier n'est plus dupliquée ici.
 
 import re
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -33,6 +34,7 @@ __all__ = [
     "Sexe",
     "SoldeConge",
     "StatutDemande",
+    "TraceSignature",
     "TypeAbsence",
     "ValidationWorkflow",
 ]
@@ -88,8 +90,14 @@ class SoldeConge(models.Model):
         return self.solde_restant - self.jours_engages()
 
     def deduire_jours(self, nb_jours):
-        """Débite le quota (RG-03). Lève ValidationError si le solde est insuffisant."""
+        """Débite le quota (RG-03). Lève ValidationError si le solde est insuffisant.
+
+        Le reliquat modifié est aussitôt répercuté sur les années suivantes (report N → N+1).
+        """
         from django.core.exceptions import ValidationError
+        from django.db import transaction
+
+        from .services.soldes import propager_report
 
         if nb_jours <= 0:
             raise ValidationError("Le nombre de jours à déduire doit être positif.")
@@ -97,12 +105,23 @@ class SoldeConge(models.Model):
             raise ValidationError(
                 f"Solde insuffisant : {self.solde_restant} jour(s) restant(s), {nb_jours} demandé(s)."
             )
-        self.jours_pris += nb_jours
-        self.save()
+        try:
+            with transaction.atomic():
+                self.jours_pris += nb_jours
+                self.save()
+                propager_report(self, strict=True)
+        except ValidationError:
+            # La base est annulée ; l'objet en mémoire doit revenir à son état d'origine.
+            self.jours_pris -= nb_jours
+            self.calculer_solde_restant()
+            raise
 
     def crediter_jours(self, nb_jours, motif=""):
         """Recrédite le quota (annulation ou rejet après validation d'un congé annuel)."""
         from django.core.exceptions import ValidationError
+        from django.db import transaction
+
+        from .services.soldes import propager_report
 
         if nb_jours <= 0:
             raise ValidationError("Le nombre de jours à recréditer doit être positif.")
@@ -110,8 +129,10 @@ class SoldeConge(models.Model):
             raise ValidationError(
                 f"Impossible de recréditer {nb_jours} jour(s) : seuls {self.jours_pris} ont été déduits."
             )
-        self.jours_pris -= nb_jours
-        self.save()
+        with transaction.atomic():
+            self.jours_pris -= nb_jours
+            self.save()
+            propager_report(self)
 
 
 class DemandeAbsenceQuerySet(models.QuerySet):
@@ -167,6 +188,39 @@ class DemandeAbsence(models.Model):
     nombre_jours = models.PositiveSmallIntegerField(default=0)
     lieu_jouissance = models.CharField(max_length=200, blank=True)
     fichier_justificatif = models.FileField(upload_to="justificatifs/", null=True, blank=True)
+    # Signature manuscrite dessinée avant la soumission. Le fichier et ses métadonnées
+    # sont immuables via l'API (les demandes ne peuvent pas être modifiées).
+    signature_agent = models.FileField(
+        upload_to="signatures_demandes/", null=True, blank=True, editable=False
+    )
+    date_signature_agent = models.DateTimeField(null=True, blank=True, editable=False)
+    signature_agent_sha256 = models.CharField(max_length=64, blank=True, editable=False)
+    signature_agent_compte = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="demandes_signees_a_la_soumission",
+        null=True,
+        blank=True,
+        editable=False,
+    )
+    # Copie figée du PDF officiel après insertion de la signature agent. Les
+    # téléchargements ultérieurs servent strictement cet artefact identique.
+    pdf_officiel = models.FileField(
+        upload_to="formulaires_signatures/", null=True, blank=True, editable=False
+    )
+    pdf_officiel_sha256 = models.CharField(max_length=64, blank=True, editable=False)
+    pdf_officiel_genere_le = models.DateTimeField(null=True, blank=True, editable=False)
+    pdf_officiel_genere_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="formulaires_officiels_sceles",
+        null=True,
+        blank=True,
+        editable=False,
+    )
+    # Ancre du dernier événement d'audit : permet de détecter l'effacement de la
+    # dernière entrée du journal sans mettre à jour le journal lui-même.
+    signature_audit_dernier_hash = models.CharField(max_length=64, blank=True, editable=False)
     statut_demande = models.CharField(
         max_length=15, choices=StatutDemande.choices, default=StatutDemande.EN_ATTENTE
     )
@@ -356,3 +410,75 @@ class ValidationWorkflow(models.Model):
         return enregistrer_avis(
             demande=demande, valideur=valideur, avis=avis, observation=observation
         )
+
+class TraceSignatureQuerySet(models.QuerySet):
+    """Journal append-only : les entrées existantes ne peuvent pas être mutées."""
+
+    def update(self, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("Les traces de signature ne peuvent pas être modifiées.")
+
+    def delete(self):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("Les traces de signature ne peuvent pas être supprimées.")
+
+
+class TraceSignature(models.Model):
+    """Journal de traçabilité avec chaînage SHA-256 par demande.
+
+    Cette protection est applicative : un administrateur disposant d'un accès direct
+    complet à la base ou au stockage peut toujours altérer les données et l'ancre.
+    """
+
+    class Evenement(models.TextChoices):
+        SIGNATURE_AGENT_ENREGISTREE = "SIGNATURE_AGENT_ENREGISTREE", "Signature du demandeur enregistrée"
+        SIGNATURE_AGENT_RECONCILIEE = "SIGNATURE_AGENT_RECONCILIEE", "Journal de signature initialisé pour une demande préexistante"
+        PDF_OFFICIEL_SCELE = "PDF_OFFICIEL_SCELE", "Document officiel scellé"
+        PDF_OFFICIEL_TELECHARGE = "PDF_OFFICIEL_TELECHARGE", "Document officiel téléchargé"
+
+    id_trace = models.BigAutoField(primary_key=True)
+    demande = models.ForeignKey(
+        DemandeAbsence,
+        on_delete=models.PROTECT,
+        related_name="traces_signature",
+        db_column="id_demande",
+    )
+    evenement = models.CharField(max_length=40, choices=Evenement.choices)
+    date_evenement = models.DateTimeField(default=timezone.now, editable=False)
+    acteur = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="traces_signature_effectuees",
+        null=True,
+        blank=True,
+        editable=False,
+    )
+    acteur_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    acteur_identifiant = models.CharField(max_length=150, default="système", editable=False)
+    signature_sha256 = models.CharField(max_length=64, blank=True, editable=False)
+    pdf_sha256 = models.CharField(max_length=64, blank=True, editable=False)
+    empreinte_precedente = models.CharField(max_length=64, blank=True, editable=False)
+    empreinte_evenement = models.CharField(max_length=64, unique=True, editable=False)
+    details = models.JSONField(default=dict, blank=True, editable=False)
+
+    objects = models.Manager.from_queryset(TraceSignatureQuerySet)()
+
+    class Meta:
+        db_table = "traces_signature"
+        ordering = ["id_trace"]
+        indexes = [
+            models.Index(fields=["demande", "date_evenement"], name="idx_trace_sig_demande_date"),
+        ]
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        if not self._state.adding:
+            raise ValidationError("Les traces de signature sont en lecture seule.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("Les traces de signature ne peuvent pas être supprimées.")
+
+    def __str__(self):
+        return f"{self.get_evenement_display()} — demande {self.demande_id} ({self.date_evenement:%Y-%m-%d %H:%M})"

@@ -7,6 +7,7 @@ import axios from 'axios'
 import { Navigate, useNavigate } from 'react-router'
 import { useAuth } from '../contexts/useAuth'
 import { imValide, MESSAGE_IM, normaliserIM } from '../lib/validationChamps'
+import { messageErreurUtilisateur, nettoyerMessageUtilisateur } from '../lib/messages'
 
 interface LoginErrorResponse {
   detail?: string
@@ -38,8 +39,8 @@ const STYLES = `
 @keyframes men-bounce-subtle{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 @keyframes men-fade-slide-right{from{opacity:0;transform:translate3d(-20px,0,0)}to{opacity:1;transform:none}}
 @keyframes men-particle-float{0%,100%{transform:translate3d(0,0,0) scale(1);opacity:.3}50%{transform:translate3d(20px,-30px,0) scale(1.3);opacity:.7}}
-@keyframes men-text-glow{0%,100%{text-shadow:0 0 20px rgba(255,255,255,.3)}50%{text-shadow:0 0 40px rgba(255,255,255,.6), 0 0 60px rgba(125,211,252,.4)}}
-@keyframes men-border-glow{0%,100%{box-shadow:0 14px 36px -14px rgba(29,78,216,.45), 0 0 0 0 rgba(59,130,246,.4)}50%{box-shadow:0 14px 36px -14px rgba(29,78,216,.6), 0 0 0 12px rgba(59,130,246,0)}}
+@keyframes men-text-glow{0%,100%{text-shadow:0 0 20px rgba(255,255,255,.3)}50%{text-shadow:0 0 40px rgba(255,255,255,.6), 0 0 60px rgba(110,151,137,.28)}}
+@keyframes men-border-glow{0%,100%{box-shadow:0 14px 36px -14px rgba(43,55,72,.45), 0 0 0 0 rgba(43,55,72,.4)}50%{box-shadow:0 14px 36px -14px rgba(43,55,72,.6), 0 0 0 12px rgba(43,55,72,0)}}
 
 .men-rise{animation:men-rise .85s cubic-bezier(.2,.7,.2,1) var(--d,0ms) both}
 .men-fade{animation:men-fade 1.4s ease-out var(--d,0ms) both}
@@ -53,7 +54,7 @@ const STYLES = `
 .men-breathe{animation:men-breathe 6s ease-in-out infinite}
 .men-glow{animation:men-glow 4s ease-in-out infinite}
 .men-card-hover{transition:transform .5s cubic-bezier(.2,.7,.2,1), box-shadow .5s ease}
-.men-card-hover:hover{transform:translateY(-4px);box-shadow:0 50px 120px -30px rgba(23,50,140,.6)}
+.men-card-hover:hover{transform:translateY(-4px);box-shadow:0 50px 120px -30px rgba(27,38,52,.34)}
 .men-pulse-ring{animation:men-pulse-ring 3s ease-in-out infinite}
 .men-gradient-shift{background-size:200% 200%;animation:men-gradient-shift 4s ease infinite}
 .men-bounce-subtle{animation:men-bounce-subtle 2.5s ease-in-out infinite}
@@ -139,9 +140,9 @@ function Fronde({
 /** Illustration de droite (ordinateur) - Version BLEUE */
 function Art() {
   const calques = [
-    { decalage: 0, fond: '#F0F0FF' },
-    { decalage: 45, fond: '#F0F0FF' },
-    { decalage: 90, fond: '#F0F0FF' },
+    { decalage: 0, fond: '#F0F1F2' },
+    { decalage: 45, fond: '#F0F1F2' },
+    { decalage: 90, fond: '#F0F1F2' },
     { decalage: 135, fond: '#ffffff' },
   ]
 
@@ -154,20 +155,20 @@ function Art() {
     >
       <defs>
         <linearGradient id="men-fond-art" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#1B1BFF" />
-          <stop offset=".55" stopColor="#1B1BFF" />
-          <stop offset="1" stopColor="#00FF9C" />
+          <stop offset="0" stopColor="#2B3748" />
+          <stop offset=".55" stopColor="#2B3748" />
+          <stop offset="1" stopColor="#4C8A74" />
         </linearGradient>
         <radialGradient id="men-lueur-art" cx=".78" cy=".28" r=".6">
-          <stop offset="0" stopColor="#00FF9C" stopOpacity=".55" />
-          <stop offset="1" stopColor="#00FF9C" stopOpacity="0" />
+          <stop offset="0" stopColor="#4C8A74" stopOpacity=".55" />
+          <stop offset="1" stopColor="#4C8A74" stopOpacity="0" />
         </radialGradient>
         <filter id="men-ombre-art" x="-30%" y="-5%" width="160%" height="110%">
           <feDropShadow
             dx="7"
             dy="0"
             stdDeviation="8"
-            floodColor="#1B1BFF"
+            floodColor="#2B3748"
             floodOpacity=".4"
           />
         </filter>
@@ -181,7 +182,7 @@ function Art() {
         y={-10}
         angle={125}
         echelle={1.2}
-        teintes={['#1B1BFF', '#1B1BFF', '#1B1BFF']}
+        teintes={['#2B3748', '#2B3748', '#2B3748']}
         duree={11}
         retard={-2}
       />
@@ -190,7 +191,7 @@ function Art() {
         y={600}
         angle={-168}
         echelle={1.35}
-        teintes={['#1B1BFF', '#1B1BFF', '#00FF9C']}
+        teintes={['#2B3748', '#2B3748', '#4C8A74']}
         duree={10}
         retard={-5}
       />
@@ -199,7 +200,7 @@ function Art() {
         y={720}
         angle={-62}
         echelle={1.55}
-        teintes={['#1B1BFF', '#1B1BFF', '#1B1BFF']}
+        teintes={['#2B3748', '#2B3748', '#2B3748']}
         duree={12}
       />
       <Fronde
@@ -207,7 +208,7 @@ function Art() {
         y={735}
         angle={-98}
         echelle={1.25}
-        teintes={['#1B1BFF', '#1B1BFF', '#00FF9C']}
+        teintes={['#2B3748', '#2B3748', '#4C8A74']}
         duree={8}
         retard={-3}
       />
@@ -229,9 +230,9 @@ function Art() {
 /** Bandeau d'illustration (mobile) - Version BLEUE */
 function ArtMobile() {
   const calques = [
-    { decalage: 36, fond: '#F0F0FF' },
-    { decalage: 24, fond: '#F0F0FF' },
-    { decalage: 12, fond: '#F0F0FF' },
+    { decalage: 36, fond: '#F0F1F2' },
+    { decalage: 24, fond: '#F0F1F2' },
+    { decalage: 12, fond: '#F0F1F2' },
     { decalage: 0, fond: '#ffffff' },
   ]
 
@@ -244,16 +245,16 @@ function ArtMobile() {
     >
       <defs>
         <linearGradient id="men-fond-mobile" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#1B1BFF" />
-          <stop offset=".6" stopColor="#1B1BFF" />
-          <stop offset="1" stopColor="#00FF9C" />
+          <stop offset="0" stopColor="#2B3748" />
+          <stop offset=".6" stopColor="#2B3748" />
+          <stop offset="1" stopColor="#4C8A74" />
         </linearGradient>
         <filter id="men-ombre-mobile" x="-5%" y="-30%" width="110%" height="160%">
           <feDropShadow
             dx="0"
             dy="4"
             stdDeviation="5"
-            floodColor="#1B1BFF"
+            floodColor="#2B3748"
             floodOpacity=".35"
           />
         </filter>
@@ -266,7 +267,7 @@ function ArtMobile() {
         y={170}
         angle={-155}
         echelle={0.55}
-        teintes={['#1B1BFF', '#1B1BFF', '#00FF9C']}
+        teintes={['#2B3748', '#2B3748', '#4C8A74']}
         duree={10}
       />
       <Fronde
@@ -274,7 +275,7 @@ function ArtMobile() {
         y={175}
         angle={-35}
         echelle={0.5}
-        teintes={['#1B1BFF', '#1B1BFF', '#00FF9C']}
+        teintes={['#2B3748', '#2B3748', '#4C8A74']}
         duree={9}
         retard={-3}
       />
@@ -298,10 +299,10 @@ function ArtMobile() {
 /* ------------------------------------------------------------------ */
 
 const champ =
-  'h-[52px] w-full rounded-full border border-[#E5E5EA] bg-white pl-12 pr-5 text-sm text-[#0A0A0A] shadow-[0_2px_8px_rgba(20,40,110,.04)] outline-none transition duration-200 placeholder:text-[#86868B] hover:border-[#E5E5EA] focus:border-[#1B1BFF]/25 focus:ring-4 focus:ring-[#1B1BFF]/15 disabled:bg-[#F0F0FF] disabled:text-slate-500 aria-[invalid=true]:border-red-400 aria-[invalid=true]:focus:ring-red-500/10'
+  'h-[48px] w-full rounded-full border border-[#E5E5EA] bg-white pl-12 pr-5 text-sm text-[#0A0A0A] shadow-[0_2px_8px_rgba(28,36,46,.06)] outline-none transition duration-200 placeholder:text-[#86868B] hover:border-[#E5E5EA] focus:border-[#2B3748]/25 focus:ring-4 focus:ring-[#2B3748]/15 disabled:bg-[#F0F1F2] disabled:text-slate-500 aria-[invalid=true]:border-red-400 aria-[invalid=true]:focus:ring-red-500/10'
 
 const etiquette =
-  'mb-2 block pl-4 text-xs font-semibold tracking-[.01em] text-[#0A0A0A] transition-colors duration-200 group-focus-within:text-[#1B1BFF]'
+  'mb-2 block pl-4 text-xs font-semibold tracking-[.01em] text-[#0A0A0A] transition-colors duration-200 group-focus-within:text-[#2B3748]'
 
 /* ------------------------------------------------------------------ */
 /* Page de connexion                                                   */
@@ -320,11 +321,11 @@ export function LoginPage() {
 
   if (chargement) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#F0F0FF]">
+      <main className="grid min-h-screen place-items-center bg-[#F0F1F2]">
         <span
           role="status"
           aria-label="Chargement"
-          className="h-6 w-6 animate-spin rounded-full border-2 border-[#1B1BFF]/20 border-t-[#1B1BFF]"
+          className="h-6 w-6 animate-spin rounded-full border-2 border-[#2B3748]/20 border-t-[#2B3748]"
         />
       </main>
     )
@@ -354,17 +355,14 @@ export function LoginPage() {
 
       navigate('/app', { replace: true })
     } catch (exception: unknown) {
-      if (axios.isAxiosError<LoginErrorResponse>(exception)) {
+      if (axios.isAxiosError<LoginErrorResponse>(exception) && exception.response?.status === 401) {
+        setError('Identifiant ou mot de passe incorrect.')
+      } else if (axios.isAxiosError<LoginErrorResponse>(exception)) {
         const data = exception.response?.data
-
-        setError(
-          data?.detail ??
-            data?.identifiant?.[0] ??
-            data?.password?.[0] ??
-            'Connexion impossible. Vérifiez vos identifiants.',
-        )
+        const message = data?.detail ?? data?.identifiant?.[0] ?? data?.password?.[0]
+        setError(nettoyerMessageUtilisateur(message) ?? messageErreurUtilisateur(exception, 'Connexion impossible. Vérifiez vos identifiants.'))
       } else {
-        setError('Une erreur inattendue est survenue.')
+        setError('Connexion impossible pour le moment. Réessayez dans quelques instants.')
       }
 
       setErrorTick((valeur) => valeur + 1)
@@ -374,43 +372,43 @@ export function LoginPage() {
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-[linear-gradient(135deg,#F0F0FF_0%,#FAFAF8_45%,#E8FFF6_100%)] px-4 py-8 font-sans text-[#0A0A0A] antialiased sm:px-8">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-[linear-gradient(135deg,#E4E6E8_0%,#F8F8F7_52%,#E8EEEA_100%)] px-4 py-8 font-sans text-[#0A0A0A] antialiased sm:px-8">
       <style>{STYLES}</style>
 
       {/* Halos flous en arrière-plan */}
       <span
         aria-hidden="true"
-        className="men-float men-glow pointer-events-none absolute -left-24 -top-24 h-96 w-96 rounded-full bg-blue-300/40 blur-3xl"
+        className="men-float men-glow pointer-events-none absolute -left-24 -top-24 h-96 w-96 rounded-full bg-slate-400/25 blur-3xl"
         style={{ '--f': '17s', '--fd': '-3s' } as CSSProperties}
       />
       <span
         aria-hidden="true"
-        className="men-float men-glow pointer-events-none absolute -bottom-32 -right-24 h-[28rem] w-[28rem] rounded-full bg-teal-300/35 blur-3xl"
+        className="men-float men-glow pointer-events-none absolute -bottom-32 -right-24 h-[28rem] w-[28rem] rounded-full bg-emerald-600/15 blur-3xl"
         style={{ '--f': '20s', '--fd': '-8s' } as CSSProperties}
       />
       <span
         aria-hidden="true"
-        className="men-float men-glow pointer-events-none absolute right-[18%] top-[6%] h-56 w-56 rounded-full bg-indigo-300/30 blur-3xl"
+        className="men-float men-glow pointer-events-none absolute right-[18%] top-[6%] h-56 w-56 rounded-full bg-slate-500/20 blur-3xl"
         style={{ '--f': '14s', '--fd': '-5s' } as CSSProperties}
       />
 
       <section
-        className="men-card-in men-card-hover relative w-full max-w-[1040px] overflow-hidden rounded-[28px] bg-white shadow-[0_40px_100px_-30px_rgba(23,50,140,.5)]"
+        className="men-card-in men-card-hover relative w-full max-w-[960px] overflow-hidden rounded-[24px] bg-white shadow-[0_32px_80px_-30px_rgba(20,27,37,.32)]"
         style={delai(60)}
       >
-        <div className="relative flex flex-col lg:min-h-[660px]">
+        <div className="relative flex flex-col lg:min-h-[590px]">
           {/* ---------- Formulaire ---------- */}
-          <div className="relative z-10 flex flex-1 flex-col justify-center px-6 py-10 sm:px-12 lg:w-[48%] lg:px-14">
-            <div className="mx-auto w-full max-w-[380px]">
+          <div className="relative z-10 flex flex-1 flex-col justify-center px-6 py-8 sm:px-10 lg:w-[48%] lg:px-10">
+            <div className="mx-auto w-full max-w-[360px]">
               {/* Logo avec animations */}
               <header
-                className="men-logo-enter mb-6 flex flex-col items-center text-center"
+                className="men-logo-enter mb-5 flex flex-col items-center text-center"
                 style={delai(120)}
               >
-                <div className="men-border-glow relative grid h-[84px] w-[84px] place-items-center rounded-[24px] border border-[#E5E5EA] bg-white p-3">
+                <div className="men-border-glow relative grid h-[72px] w-[72px] place-items-center rounded-[20px] border border-[#D8DDE2] bg-white p-2.5">
                   <span
                     aria-hidden="true"
-                    className="men-pulse-ring absolute inset-0 rounded-[24px] border-2 border-[#1B1BFF]/30"
+                    className="men-pulse-ring absolute inset-0 rounded-[20px] border-2 border-[#2B3748]/25"
                   />
                   <img
                     src="/LOGOMEN.jpg"
@@ -418,25 +416,28 @@ export function LoginPage() {
                     className="h-full w-full object-contain mix-blend-multiply"
                   />
                 </div>
+                <p className="mt-3 max-w-[280px] text-[10px] font-bold uppercase tracking-[.14em] text-[#4B5563] sm:text-[11px]">
+                  Ministère de l’Éducation Nationale
+                </p>
               </header>
 
               {/* Titre avec animation de glissement */}
               <div className="men-fade-slide-right text-center" style={delai(200)}>
-                <h1 className="men-serif text-[40px] font-normal leading-none tracking-[-0.03em] text-[#0A0A0A] sm:text-[44px]">
+                <h1 className="men-serif text-[36px] font-normal leading-none tracking-[-0.03em] text-[#0A0A0A] sm:text-[38px]">
                   Connexion
                 </h1>
                 <div
                   aria-hidden="true"
-                  className="men-accent-reveal mx-auto mt-5 h-[3px] w-10 rounded-full bg-gradient-to-r from-[#1B1BFF] to-sky-400"
+                  className="men-accent-reveal mx-auto mt-5 h-[3px] w-10 rounded-full bg-gradient-to-r from-[#2B3748] to-[#5E8278]"
                   style={delai(380)}
                 />
               </div>
 
               {/* Formulaire */}
-              <form onSubmit={submit} className="mt-8 space-y-5" noValidate>
+              <form onSubmit={submit} className="mt-6 space-y-4" noValidate>
                 <div className="men-rise group" style={delai(300)}>
                   <label htmlFor="men-identifiant" className={etiquette}>
-                    Identifiant professionnel
+                    Indice matricule
                   </label>
                   <div className="relative">
                     <span
@@ -476,7 +477,7 @@ export function LoginPage() {
                       disabled={pending}
                       required
                       maxLength={150}
-                      placeholder="Votre IM ou identifiant"
+                      placeholder="Votre indice matricule"
                       aria-invalid={Boolean(error || (/^\d/.test(identifiant) && !imValide(identifiant)))}
                       className={champ}
                     />
@@ -533,7 +534,7 @@ export function LoginPage() {
                           : 'Afficher le mot de passe'
                       }
                       aria-pressed={showPassword}
-                      className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-[#86868B] transition hover:bg-[#1B1BFF]/10 hover:text-[#1B1BFF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1B1BFF]/30"
+                      className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-[#86868B] transition hover:bg-[#2B3748]/10 hover:text-[#2B3748] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2B3748]/30"
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -584,11 +585,11 @@ export function LoginPage() {
                   </div>
                 )}
 
-                <div className="men-rise pt-2" style={delai(520)}>
+                <div className="men-rise pt-1" style={delai(520)}>
                   <button
                     type="submit"
                     disabled={pending || !identifiant.trim() || !password}
-                    className="men-submit men-gradient-shift group flex h-[52px] w-full items-center justify-center gap-2.5 rounded-full bg-[linear-gradient(135deg,#1B1BFF_0%,#1B1BFF_50%,#00FF9C_100%)] px-4 text-sm font-semibold tracking-wide text-white shadow-[0_14px_28px_-12px_rgba(27,27,255,.8)] transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_34px_-12px_rgba(27,27,255,.9)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#1B1BFF]/30 active:translate-y-0 disabled:pointer-events-none disabled:opacity-50"
+                    className="men-submit men-gradient-shift group flex h-[48px] w-full items-center justify-center gap-2.5 rounded-full bg-[linear-gradient(135deg,#2B3748_0%,#2B3748_50%,#4C8A74_100%)] px-4 text-sm font-semibold tracking-wide text-white shadow-[0_14px_28px_-12px_rgba(43,55,72,.8)] transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_34px_-12px_rgba(43,55,72,.9)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#2B3748]/30 active:translate-y-0 disabled:pointer-events-none disabled:opacity-50"
                   >
                     {pending && (
                       <span
@@ -618,7 +619,7 @@ export function LoginPage() {
               </form>
 
               <p
-                className="men-fade mt-7 text-center text-[11px] leading-relaxed text-[#86868B]"
+                className="men-fade mt-5 text-center text-[11px] leading-relaxed text-[#86868B]"
                 style={delai(700)}
               >
                 En cas de difficulté de connexion, contactez votre
@@ -626,7 +627,7 @@ export function LoginPage() {
               </p>
 
               <p
-                className="men-fade mt-4 text-center text-[10px] tracking-[.14em] text-[#86868B]"
+                className="men-fade mt-3 text-center text-[10px] tracking-[.14em] text-[#86868B]"
                 style={delai(760)}
               >
                 MEN · MADAGASCAR
@@ -688,20 +689,9 @@ export function LoginPage() {
               } as CSSProperties}
             />
 
-            <div className="absolute bottom-0 left-[-100%] right-0 h-1/2 bg-gradient-to-t from-[#1B1BFF]/95 via-[#1B1BFF]/60 to-transparent" />
+            <div className="absolute bottom-0 left-[-100%] right-0 h-1/2 bg-gradient-to-t from-[#202A35]/90 via-[#202A35]/45 to-transparent" />
 
-            <h2 className="men-serif men-text-glow absolute bottom-10 right-10 text-right text-[34px] font-normal leading-[1.1] tracking-[-0.01em] text-white xl:text-[42px]">
-              <span className="block overflow-hidden pb-[0.12em]">
-                <span className="men-line block" style={delai(700)}>
-                  Ministère de
-                </span>
-              </span>
-              <span className="block overflow-hidden pb-[0.12em]">
-                <span className="men-line block" style={delai(860)}>
-                  l’Éducation Nationale
-                </span>
-              </span>
-            </h2>
+
           </div>
 
           {/* ---------- Illustration (mobile) ---------- */}

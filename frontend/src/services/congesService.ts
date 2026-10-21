@@ -1,5 +1,18 @@
 import { api } from '../lib/api'
 
+/** Types pour lesquels le formulaire officiel MEN peut être généré. */
+export const TYPES_AVEC_FICHE_OFFICIELLE = [
+  'CONGE_ANNUEL',
+  'AUTORISATION',
+  'PERMISSION',
+] as const
+
+export function typePossedeFicheOfficielle(typeAbsence?: string | null): boolean {
+  return TYPES_AVEC_FICHE_OFFICIELLE.includes(
+    (typeAbsence ?? '').trim().toUpperCase() as (typeof TYPES_AVEC_FICHE_OFFICIELLE)[number],
+  )
+}
+
 export type StatutDemande =
   | 'EN_ATTENTE'
   | 'APPROUVE_CS'
@@ -98,6 +111,39 @@ export async function listerMesDemandes({
     precedente: data.precedente ?? null,
     resultats,
   }
+}
+
+
+export interface TraceIntegriteDocument {
+  evenement: string
+  date: string
+  acteur: string
+  empreinte_evenement: string
+  empreinte_pdf: string | null
+}
+
+export interface VerificationIntegriteDocument {
+  signature_presente: boolean
+  signature_integrite: boolean | null
+  document_present: boolean
+  document_integrite: boolean | null
+  journal_integrite: boolean | null
+  integrite_globale: boolean | null
+  empreinte_pdf: string | null
+  pdf_genere_le: string | null
+  signature_le: string | null
+  signature_par: string | null
+  historique: TraceIntegriteDocument[]
+  numero_demande: string | null
+}
+
+export async function verifierIntegriteFormulaire(
+  idDemande: number,
+): Promise<VerificationIntegriteDocument> {
+  const { data } = await api.get<VerificationIntegriteDocument>(
+    `/demandes/${idDemande}/integrite/`,
+  )
+  return data
 }
 
 export async function recupererFormulaireOfficiel(

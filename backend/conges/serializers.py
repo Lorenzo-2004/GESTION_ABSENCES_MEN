@@ -5,11 +5,19 @@ déclenchée explicitement dans les vues via les services (`soumettre_demande`,
 `enregistrer_avis`, …), qui restent la source de vérité.
 """
 
+import base64
+import binascii
+import struct
+from io import BytesIO
+
+from django.core.files.base import ContentFile
+from PIL import Image, UnidentifiedImageError
 from rest_framework import serializers
 
 from personnels.models import Personnel
 from personnels.serializers import PersonnelSerializer
 from .enums import TypeAbsence
+from .regles import TYPES_PERIODE_AUTOMATIQUE, periode_automatique
 
 from .models import DecisionConge, DemandeAbsence, SoldeConge, ValidationWorkflow
 
@@ -27,15 +35,93 @@ class DemandeAbsenceSerializer(serializers.ModelSerializer):
         write_only=True,
     )
 
+    # Le canvas transmet une image PNG encodée en data URL. Le champ est write-only :
+    # on ne renvoie jamais le chemin privé du fichier au navigateur.
+    signature_agent = serializers.CharField(
+        required=True, write_only=True, allow_blank=False, trim_whitespace=False,
+        max_length=3_000_000,
+    )
+    date_signature_agent = serializers.DateTimeField(read_only=True)
+    signature_agent_sha256 = serializers.CharField(read_only=True)
+    signature_agent_compte = serializers.CharField(
+        source="signature_agent_compte.username", read_only=True, allow_null=True
+    )
+    pdf_officiel_sha256 = serializers.CharField(read_only=True)
+    pdf_officiel_genere_le = serializers.DateTimeField(read_only=True)
+    pdf_officiel_genere_par = serializers.CharField(
+        source="pdf_officiel_genere_par.username", read_only=True, allow_null=True
+    )
+
     class Meta:
         model = DemandeAbsence
         fields = [
             "id_demande", "numero_enregistrement", "personnel", "personnel_detail",
             "type_absence", "annee_titre", "date_evenement_prevue", "type_absence_libelle", "motif", "date_debut", "date_fin",
-            "nombre_jours", "lieu_jouissance", "fichier_justificatif", "statut_demande", "statut_libelle",
-            "date_creation", "validations", "justificatif_url",
+            "nombre_jours", "lieu_jouissance", "fichier_justificatif", "signature_agent",
+            "date_signature_agent", "signature_agent_sha256", "signature_agent_compte",
+            "pdf_officiel_sha256", "pdf_officiel_genere_le", "pdf_officiel_genere_par",
+            "statut_demande", "statut_libelle", "date_creation", "validations", "justificatif_url",
         ]
         read_only_fields = ["numero_enregistrement", "nombre_jours", "statut_demande", "date_creation"]
+        # Début et fin sont facultatifs au niveau du champ : pour maternité/paternité
+        # ils sont calculés ; pour les autres types, validate() les exige.
+        extra_kwargs = {
+            "date_debut": {"required": False},
+            "date_fin": {"required": False},
+        }
+
+    def to_internal_value(self, data):
+        """Refuse les champs inconnus au lieu de les ignorer en silence.
+
+        DRF jette sans prévenir toute clé absente du sérialiseur : une donnée du
+        formulaire non prévue côté backend disparaîtrait sans erreur.
+        """
+        if hasattr(data, "keys"):
+            inconnus = sorted(set(data.keys()) - set(self.fields.keys()))
+            if inconnus:
+                raise serializers.ValidationError({
+                    cle: "Champ non reconnu : il ne serait pas enregistré." for cle in inconnus
+                })
+        return super().to_internal_value(data)
+
+    def validate_signature_agent(self, valeur):
+        """Valide une signature dessinée et la convertit en PNG avant stockage."""
+        prefixe = "data:image/png;base64,"
+        if not isinstance(valeur, str) or not valeur.startswith(prefixe):
+            raise serializers.ValidationError(
+                "Tracez votre signature dans la zone prévue avant de soumettre la demande."
+            )
+        try:
+            contenu = base64.b64decode(valeur[len(prefixe):], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise serializers.ValidationError("La signature fournie n'est pas une image valide.") from exc
+
+        if not contenu or len(contenu) > 2 * 1024 * 1024:
+            raise serializers.ValidationError("La signature est vide ou dépasse la taille autorisée.")
+        if not contenu.startswith(b"\x89PNG\r\n\x1a\n") or len(contenu) < 24 or contenu[12:16] != b"IHDR":
+            raise serializers.ValidationError("La signature doit être une image PNG valide.")
+        largeur, hauteur = struct.unpack(">II", contenu[16:24])
+        if not (100 <= largeur <= 1600 and 30 <= hauteur <= 600):
+            raise serializers.ValidationError("La taille de la signature n'est pas valide.")
+
+        try:
+            with Image.open(BytesIO(contenu)) as image:
+                image.verify()
+            with Image.open(BytesIO(contenu)) as image:
+                rgba = image.convert("RGBA")
+                pixels_opaques = 0
+                # Le canvas est transparent sauf les traits d'encre. Refuse une image blanche/vide.
+                for rouge, vert, bleu, alpha in rgba.getdata():
+                    if alpha > 40 and max(rouge, vert, bleu) < 190:
+                        pixels_opaques += 1
+                        if pixels_opaques >= 12:
+                            break
+                if pixels_opaques < 12:
+                    raise serializers.ValidationError("Veuillez tracer votre signature avant de continuer.")
+        except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
+            raise serializers.ValidationError("La signature fournie n'est pas une image valide.") from exc
+
+        return ContentFile(contenu, name="signature-agent.png")
 
     def validate_fichier_justificatif(self, fichier):
         """Valide le format et la taille du justificatif facultatif."""
@@ -54,37 +140,41 @@ class DemandeAbsenceSerializer(serializers.ModelSerializer):
         return fichier
     
     def validate(self, attrs):
-        """Valide les dates et l'année au titre du congé annuel."""
+        """Valide année de titre, période (saisie ou calculée) et champs du formulaire."""
 
         type_absence = attrs.get("type_absence")
-        annee_titre = attrs.get("annee_titre")
+        erreurs = {}
 
-        if (
-            type_absence == TypeAbsence.CONGE_ANNUEL
-            and not annee_titre
-        ):
-            raise serializers.ValidationError({
-                "annee_titre": (
-                    "L'année au titre de laquelle le congé est demandé "
-                    "est obligatoire."
+        if type_absence == TypeAbsence.CONGE_ANNUEL and not attrs.get("annee_titre"):
+            erreurs["annee_titre"] = (
+                "L'année au titre de laquelle le congé est demandé est obligatoire."
+            )
+
+        # Le formulaire officiel doit être imprimable en entier : ces deux champs
+        # sont donc obligatoires dès la saisie, quel que soit le type d'absence.
+        for champ, libelle in (("motif", "Le motif"), ("lieu_jouissance", "Le lieu de jouissance")):
+            if not (attrs.get(champ) or "").strip():
+                erreurs[champ] = f"{libelle} est obligatoire."
+
+        if type_absence in TYPES_PERIODE_AUTOMATIQUE:
+            evenement = attrs.get("date_evenement_prevue")
+            if evenement is None:
+                erreurs["date_evenement_prevue"] = (
+                    "La date prévue de l'accouchement est obligatoire."
                 )
-            })
+            else:
+                # Les dates éventuellement envoyées par le client sont écrasées.
+                attrs["date_debut"], attrs["date_fin"] = periode_automatique(type_absence, evenement)
+        else:
+            for champ, libelle in (("date_debut", "début"), ("date_fin", "fin")):
+                if attrs.get(champ) is None:
+                    erreurs[champ] = f"La date de {libelle} est obligatoire."
+            debut, fin = attrs.get("date_debut"), attrs.get("date_fin")
+            if debut and fin and fin < debut:
+                erreurs["date_fin"] = "La date de fin ne peut pas précéder la date de début."
 
-        date_debut = attrs.get("date_debut")
-        date_fin = attrs.get("date_fin")
-
-        if (
-            date_debut is not None
-            and date_fin is not None
-            and date_fin < date_debut
-        ):
-            raise serializers.ValidationError({
-                "date_fin": (
-                    "La date de fin ne peut pas précéder "
-                    "la date de début."
-                )
-            })
-
+        if erreurs:
+            raise serializers.ValidationError(erreurs)
         return attrs
 
     def get_validations(self, obj):
@@ -93,7 +183,8 @@ class DemandeAbsenceSerializer(serializers.ModelSerializer):
     def get_justificatif_url(self, obj):
         if not obj.fichier_justificatif:
             return None
-        return f"/api/demandes/{obj.pk}/justificatif/"
+        # Route GET réelle (l'URL « .../justificatif/ » seule n'accepte que le dépôt en POST).
+        return f"/api/demandes/{obj.pk}/justificatif/telecharger/"
 
 
 class DemandeAbsenceSoumissionSerializer(DemandeAbsenceSerializer):

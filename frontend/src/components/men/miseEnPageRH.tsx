@@ -453,7 +453,13 @@ const NAV_ADMIN: ElementNav<VueAdmin>[] = [
 ]
 
 export function CoquilleRH(props: PropsEspace<VueRH>) {
-  return <Coquille<VueRH> {...props} espace="Espace RH" elements={NAV_RH} />
+  const { utilisateur } = useAuth()
+  const serviceDisponible = utilisateur?.personnel?.service != null
+  const elements = serviceDisponible
+    ? NAV_RH
+    : NAV_RH.filter((element) => !['rh-espace-service', 'rh-service-equipe', 'rh-service-planning'].includes(element.id ?? ''))
+
+  return <Coquille<VueRH> {...props} espace="Espace RH" elements={elements} />
 }
 
 export function CoquilleAgent(props: PropsEspace<VueAgent>) {
@@ -463,10 +469,10 @@ export function CoquilleAgent(props: PropsEspace<VueAgent>) {
   if (utilisateur?.role === 'ROLE_CHEF_SERVICE') {
     elements.push({ cle: 'apercu', id: 'retour-espace-chef', libelle: 'Retour à mon espace Chef de service', icone: 'building', chemin: '/app/chef-service' })
   } else if (utilisateur?.role === 'ROLE_RH') {
-    elements.push(
-      { cle: 'apercu', id: 'retour-espace-rh', libelle: 'Retour à la gestion RH', icone: 'building', chemin: '/app/rh' },
-      { cle: 'apercu', id: 'retour-espace-service-rh', libelle: 'Retour à mon service', icone: 'users', chemin: '/app/chef-service' },
-    )
+    elements.push({ cle: 'apercu', id: 'retour-espace-rh', libelle: 'Retour à la gestion RH', icone: 'building', chemin: '/app/rh' })
+    if (utilisateur.personnel?.service != null) {
+      elements.push({ cle: 'apercu', id: 'retour-espace-service-rh', libelle: 'Retour à mon service', icone: 'users', chemin: '/app/chef-service' })
+    }
   }
 
   return <Coquille<VueAgent> {...props} espace="Espace personnel" elements={elements} />

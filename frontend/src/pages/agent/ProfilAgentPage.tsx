@@ -32,7 +32,7 @@ const STYLES = `
 .pr-nav{animation:pr-nav .6s cubic-bezier(.22,1,.36,1) var(--d,0ms) backwards}
 .pr-line{transform-origin:left center;animation:pr-line .8s cubic-bezier(.22,1,.36,1) 500ms backwards}
 .pr-link{position:relative}
-.pr-link::after{content:"";position:absolute;left:0;right:0;bottom:-6px;height:2px;border-radius:2px;background:#0A0A0A;transform:scaleX(0);transform-origin:left;transition:transform .3s cubic-bezier(.22,1,.36,1)}
+.pr-link::after{content:"";position:absolute;left:0;right:0;bottom:-6px;height:2px;border-radius:2px;background:#C7CDD3;transform:scaleX(0);transform-origin:left;transition:transform .3s cubic-bezier(.22,1,.36,1)}
 .pr-link:hover::after,.pr-link:focus-visible::after{transform:scaleX(1)}
 .pr-banner{animation:pr-banner 1s ease-out backwards}
 .pr-float-a{animation:pr-float-a 14s ease-in-out infinite}
@@ -62,12 +62,12 @@ function initiales(nom: string): string {
 }
 
 const TEINTES = {
-  bleu: 'bg-[#E3E3FF]',
-  gris: 'bg-[#EDEDEF]',
-  vert: 'bg-[#D6FFEC]',
+  bleu: 'bg-[#CDD8E7]',
+  gris: 'bg-[#E1E3E6]',
+  vert: 'bg-[#B3DECB]',
 } as const
 
-/* Carte façon "projet" : fond pastel, panneau blanc, titre + sous-titre dessous */
+/* Cartes de profil : fonds contrastés, contenu aligné et valeurs adaptables aux libellés longs. */
 function Section({
   titre,
   description,
@@ -82,17 +82,17 @@ function Section({
   retard?: number
 }) {
   return (
-    <section className="pr-row group" style={delai(retard)}>
+    <section className="pr-row group min-w-0" style={delai(retard)}>
       <div
-        className={`flex min-h-[210px] flex-col justify-center rounded-[24px] p-4 transition duration-300 ease-out group-hover:-translate-y-1.5 group-hover:shadow-[0_22px_34px_-24px_rgba(27,27,255,0.45)] sm:p-5 ${TEINTES[teinte]}`}
+        className={`flex min-h-[210px] min-w-0 flex-col justify-center rounded-[24px] p-4 transition duration-300 ease-out group-hover:-translate-y-1 group-hover:shadow-[0_22px_34px_-24px_rgba(20,24,28,0.35)] sm:p-5 ${TEINTES[teinte]}`}
       >
-        <dl className="divide-y divide-[#F5F5F7] rounded-2xl bg-white px-4 py-1 shadow-[0_8px_24px_-14px_rgba(20,20,60,0.25)] transition-transform duration-300 group-hover:scale-[1.02]">
+        <dl className="min-w-0 divide-y divide-[#DDE0E4] rounded-2xl border border-white/80 bg-white px-4 py-1 shadow-[0_8px_24px_-14px_rgba(25,29,34,0.28)] transition-transform duration-300 group-hover:scale-[1.01]">
           {children}
         </dl>
       </div>
       <div className="mt-3 px-1">
-        <h2 className="text-lg font-medium text-[#0A0A0A]">{titre}</h2>
-        <p className="mt-0.5 text-[13px] text-[#86868B]">{description}</p>
+        <h2 className="text-lg font-semibold tracking-[-0.02em] text-[#202327]">{titre}</h2>
+        <p className="mt-0.5 text-[13px] text-[#5D6269]">{description}</p>
       </div>
     </section>
   )
@@ -109,11 +109,11 @@ function Ligne({
 }) {
   const vide = valeur === null || valeur === undefined || valeur === ''
   return (
-    <div className="pr-row flex items-start justify-between gap-4 py-3" style={delai(retard)}>
-      <dt className="shrink-0 text-[13px] text-[#86868B]">{libelle}</dt>
+    <div className="pr-row grid min-w-0 grid-cols-1 items-start gap-1.5 py-3 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] sm:gap-3" style={delai(retard)}>
+      <dt className="min-w-0 break-words text-[12px] leading-5 text-[#5F656C] sm:text-[13px]">{libelle}</dt>
       <dd
-        className={`min-w-0 break-words text-right text-sm ${
-          vide ? 'italic text-[#86868B]' : 'font-semibold text-[#0A0A0A]'
+        className={`min-w-0 break-words text-right text-[13px] leading-5 [overflow-wrap:anywhere] sm:text-sm ${
+          vide ? 'italic text-[#626870]' : 'font-semibold text-[#202327]'
         }`}
       >
         {vide ? 'Non renseigné' : String(valeur)}
@@ -124,9 +124,9 @@ function Ligne({
 
 function Stat({ libelle, valeur, retard }: { libelle: string; valeur: string; retard: number }) {
   return (
-    <div className="pr-stat min-w-0" style={delai(retard)}>
-      <p className="text-[13px] font-medium text-[#0A0A0A]/60">{libelle}</p>
-      <p className="men-serif mt-1.5 line-clamp-2 max-w-[170px] break-words text-lg leading-[1.15] text-[#0A0A0A] sm:text-xl" title={valeur}>
+    <div className="pr-stat min-w-0 rounded-xl border border-white/15 bg-white/[0.06] p-3" style={delai(retard)}>
+      <p className="text-[13px] font-semibold text-white/70">{libelle}</p>
+      <p className="men-serif mt-1.5 line-clamp-2 break-words text-lg leading-[1.15] text-white [overflow-wrap:anywhere] sm:text-xl" title={valeur}>
         {valeur}
       </p>
     </div>
@@ -158,7 +158,7 @@ export function ProfilAgentPage() {
         <style>{STYLES}</style>
         <div className="pr-rise flex flex-col items-center gap-4" role="status" aria-live="polite">
           <span
-            className="h-9 w-9 animate-spin rounded-full border-[3px] border-[#1B1BFF]/15 border-t-[#1B1BFF]"
+            className="h-9 w-9 animate-spin rounded-full border-[3px] border-white/25 border-t-[#477B68]"
           />
           <p className="text-sm text-[#86868B]">Chargement de votre profil…</p>
         </div>
@@ -175,7 +175,7 @@ export function ProfilAgentPage() {
     return (
       <div className="grid min-h-screen place-items-center bg-[#FAFAF8] p-6">
         <style>{STYLES}</style>
-        <section className="pr-rise max-w-md rounded-[28px] bg-[#F0F0FF] p-8 text-center">
+        <section className="pr-rise max-w-md rounded-[28px] bg-[#E3E6E9] p-8 text-center">
           <h1 className="men-serif text-2xl text-[#0A0A0A]">Profil indisponible</h1>
           <p className="mt-3 text-sm leading-relaxed text-[#555]">
             Aucun dossier du personnel n’est associé à ce compte. Contactez le service des ressources humaines pour
@@ -211,13 +211,13 @@ export function ProfilAgentPage() {
       <style>{STYLES}</style>
 
       {/* ---- CONTENEUR DE LA PAGE ---- */}
-      <div className="pr-rise relative mx-auto max-w-4xl overflow-hidden rounded-[28px] border border-[#E5E5EA] bg-white shadow-[0_1px_2px_rgba(10,10,10,0.04),0_24px_50px_-28px_rgba(27,27,255,0.25)]">
+      <div className="pr-rise relative mx-auto max-w-4xl overflow-hidden rounded-[28px] border border-[#D8DADD] bg-white shadow-[0_1px_2px_rgba(10,10,10,0.05),0_24px_50px_-28px_rgba(20,24,28,0.24)]">
 
       {/* ---- HAUT DE PAGE : tout le contenu est à l'intérieur du dégradé ---- */}
       <div className="relative">
-        <div aria-hidden="true" className="pr-banner pointer-events-none absolute inset-0 overflow-hidden bg-gradient-to-br from-[#E4E4FF] via-[#F0F0FF] to-[#F7F7FF]">
-          <div className="pr-float-a absolute -left-16 top-[25%] h-[75%] w-[60%] rounded-[100%] bg-[#1B1BFF]/30 blur-3xl" />
-          <div className="pr-float-b absolute -top-[10%] right-[2%] h-[70%] w-[45%] rounded-[100%] bg-[#00FF9C]/25 blur-3xl" />
+        <div aria-hidden="true" className="pr-banner pointer-events-none absolute inset-0 overflow-hidden bg-gradient-to-br from-[#172554] via-[#1D4ED8] to-[#1B1BFF]">
+          <div className="pr-float-a absolute -left-16 top-[25%] h-[75%] w-[60%] rounded-[100%] bg-[#B8C0C8]/16 blur-3xl" />
+          <div className="pr-float-b absolute -top-[10%] right-[2%] h-[70%] w-[45%] rounded-[100%] bg-[#60A5FA]/20 blur-3xl" />
         </div>
 
       <div className="relative px-5 pb-8 sm:px-8">
@@ -231,7 +231,7 @@ export function ProfilAgentPage() {
               key={l.to}
               to={l.to}
               style={delai(60 + i * 70)}
-              className="pr-nav pr-link rounded-md text-sm font-medium text-[#0A0A0A]/70 transition-colors duration-200 hover:text-[#0A0A0A] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#1B1BFF]/30"
+              className="pr-nav pr-link rounded-md text-sm font-medium text-white/75 transition-colors duration-200 hover:text-white focus:outline-none focus-visible:ring-4 focus-visible:ring-white/30"
             >
               {l.libelle}
             </Link>
@@ -243,41 +243,40 @@ export function ProfilAgentPage() {
           <div className="pr-avatar relative shrink-0">
             <span
               aria-hidden="true"
-              className="pr-frame absolute inset-0 rounded-[60px] bg-[#1B1BFF]/15 ring-1 ring-white/70 backdrop-blur-sm"
+              className="pr-frame absolute inset-0 rounded-[60px] bg-white/10 ring-1 ring-white/35 backdrop-blur-sm"
             />
-            <span className="men-serif relative grid h-[170px] w-[170px] place-items-center rounded-[60px] bg-gradient-to-br from-[#3B3BFF] via-[#1B1BFF] to-[#1B1BFF] text-5xl text-white shadow-[0_24px_44px_-20px_rgba(27,27,255,0.55)] sm:h-[200px] sm:w-[200px] sm:text-6xl">
+            <span className="men-serif relative grid h-[170px] w-[170px] place-items-center rounded-[60px] bg-gradient-to-br from-[#3B82F6] via-[#1E40AF] to-[#172554] text-5xl text-white shadow-[0_24px_44px_-20px_rgba(30,64,175,0.48)] sm:h-[200px] sm:w-[200px] sm:text-6xl">
               {initiales(nomComplet || utilisateur.username)}
             </span>
           </div>
 
-          <div className="flex min-w-0 flex-1 flex-col items-center gap-6 pb-1 md:flex-row md:items-end md:justify-between">
+          <div className="flex min-w-0 flex-1 flex-col items-center gap-6 pb-1 md:items-stretch">
             <div className="min-w-0 text-center md:text-left">
               <div className="pr-rise flex flex-wrap items-center justify-center gap-3 md:justify-start" style={delai(200)}>
-                <h1 className="men-serif text-2xl leading-tight sm:text-[2rem]">{nomComplet}</h1>
+                <h1 className="men-serif text-2xl leading-tight text-white sm:text-[2rem]">{nomComplet}</h1>
                 <span
-                  className="rounded-lg px-2.5 py-1 text-xs font-bold text-white"
+                  className="rounded-lg px-2.5 py-1 text-xs font-bold text-white ring-1 ring-white/20"
                   style={{ backgroundColor: ACCENT }}
                 >
                   {utilisateur.role_libelle || 'Agent'}
                 </span>
               </div>
-              <p className="pr-rise mt-2 text-[15px] leading-snug text-[#0A0A0A]/75" style={delai(260)}>
+              <p className="pr-rise mt-2 text-[15px] leading-snug text-white/75" style={delai(260)}>
                 {corpsGrade}
                 <br />
                 Immatricule&nbsp;: {personnel.im}
               </p>
               {personnel.statut && (
                 <span
-                  className="pr-rise mt-3 inline-flex h-9 items-center gap-2 rounded-full border border-[#0A0A0A] bg-white/60 px-4 text-[13px] font-medium"
+                  className="pr-rise mt-3 inline-flex h-9 items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 text-[13px] font-medium text-white"
                   style={delai(320)}
                 >
-                  <span className="h-2 w-2 rounded-full bg-[#00FF9C] ring-2 ring-[#0A0A0A]/10" />
                   {personnel.statut}
                 </span>
               )}
             </div>
 
-            <div className="flex flex-wrap justify-center gap-6 md:gap-8">
+            <div className="grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4 md:gap-5">
               <Stat libelle="Direction" valeur={personnel.direction_libelle || 'Non renseignée'} retard={300} />
               <Stat libelle="Service" valeur={personnel.service_libelle || 'Non renseigné'} retard={370} />
               <Stat libelle="Corps / Grade" valeur={corpsGrade} retard={440} />
@@ -309,7 +308,7 @@ export function ProfilAgentPage() {
                   tabIndex={actif ? 0 : -1}
                   onClick={() => setOngletActif(o.id)}
                   onKeyDown={surTouche}
-                  className={`relative px-4 py-3 text-sm transition-colors duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#1B1BFF]/25 ${
+                  className={`relative px-4 py-3 text-sm transition-colors duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#477B68]/30 ${
                     actif ? 'font-semibold text-[#0A0A0A]' : 'font-medium text-[#555] hover:text-[#0A0A0A]'
                   }`}
                 >

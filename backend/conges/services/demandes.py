@@ -17,14 +17,69 @@ from ..regles import (
     JUSTIFICATIF_OBLIGATOIRE,
     TAILLE_MAX_JUSTIFICATIF_OCTETS,
     TYPES_INTERDITS_AUX_STAGIAIRES,
+    TYPES_PERIODE_AUTOMATIQUE,
+    TYPES_AVEC_FORMULAIRE_OFFICIEL,
     TYPES_RESERVES_AUX_FEMMES,
     TYPES_RESERVES_AUX_HOMMES,
     duree_maximale,
+    periode_automatique,
 )
 from . import quotas
 from .notifications import notifier_justificatif_joint
 
 logger = logging.getLogger(__name__)
+
+
+def appliquer_periode_automatique(demande):
+    """Maternité / paternité : déduit début et fin de la date prévue (90 j / 15 j).
+
+    Toute date saisie par le client est écrasée : la période réglementaire est
+    calculée par le système, jamais déclarée par l'agent.
+    """
+    if demande.type_absence not in TYPES_PERIODE_AUTOMATIQUE:
+        return
+    if demande.date_evenement_prevue is None:
+        raise ValidationError({
+            "date_evenement_prevue": "La date prévue de l'accouchement est obligatoire (RG-11)."
+        })
+    demande.date_debut, demande.date_fin = periode_automatique(
+        demande.type_absence, demande.date_evenement_prevue
+    )
+
+
+def verifier_dossier_complet(demande):
+    """Contrôle les champs du formulaire officiel pour les trois types concernés.
+
+    Maternité, paternité, mission et repos sanitaire sont des annonces : elles ne
+    nécessitent pas la fiche officielle MEN (RG-16).
+    """
+    if demande.type_absence not in TYPES_AVEC_FORMULAIRE_OFFICIEL:
+        return
+
+    personnel = demande.personnel
+    manquants = []
+    champs = {
+        "nom": personnel.nom_complet,
+        "IM": personnel.im,
+        "corps": personnel.corps,
+        "grade": personnel.grade,
+        "service ou direction": personnel.service or personnel.direction,
+        "motif": demande.motif,
+        "lieu de jouissance": demande.lieu_jouissance,
+        "date de début": demande.date_debut,
+        "date de fin": demande.date_fin,
+    }
+    for libelle, valeur in champs.items():
+        if valeur is None or (isinstance(valeur, str) and not valeur.strip()):
+            manquants.append(libelle)
+
+    if demande.type_absence in TYPES_PERIODE_AUTOMATIQUE and demande.date_evenement_prevue is None:
+        manquants.append("date prévue de l'accouchement")
+
+    if manquants:
+        raise ValidationError(
+            "Formulaire incomplet : champs obligatoires manquants : " + ", ".join(manquants) + "."
+        )
 
 
 def _verifier_coherence_des_dates(demande):
@@ -153,7 +208,7 @@ def _verifier_duree_maximale(demande, nombre_jours):
 
 
 def _verifier_justificatif(demande):
-    """RG-08 : pièce obligatoire pour mission, repos sanitaire et congés familiaux."""
+    """RG-08 : aucune pièce n'est exigée aujourd'hui (JUSTIFICATIF_OBLIGATOIRE est vide)."""
     if demande.type_absence in JUSTIFICATIF_OBLIGATOIRE and not demande.fichier_justificatif:
         raise ValidationError({
             "fichier_justificatif": "Un justificatif est obligatoire pour ce type d'absence (RG-08)."
@@ -200,8 +255,10 @@ def valider_fichier_justificatif(fichier):
 
 def verifier_regles(demande):
     """Applique les règles métier de soumission et renvoie le nombre de jours."""
+    appliquer_periode_automatique(demande)
     _verifier_coherence_des_dates(demande)
     _verifier_eligibilite(demande)
+    verifier_dossier_complet(demande)
 
     nombre_jours = demande.calculer_nombre_jours()
     _verifier_duree_maximale(demande, nombre_jours)

@@ -1,4 +1,3 @@
-import { isAxiosError } from 'axios'
 import {
   useCallback,
   useEffect,
@@ -23,6 +22,8 @@ import {
   Tiroir,
   type VueDirecteur,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
+import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
 
 const TITRES_VUES: Record<VueDirecteur, { titre: string; description: string }> = {
   apercu: { titre: 'Vue d’ensemble', description: 'Suivi des validations de la direction' },
@@ -123,26 +124,7 @@ function teinteAvatar(nom: string): string {
 }
 
 function messageErreur(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    if (erreur.response?.status === 401) return 'Votre session a expiré. Veuillez vous reconnecter.'
-    if (erreur.response?.status === 403) return 'Vous ne disposez pas des autorisations nécessaires.'
-    if (!erreur.response) return 'Le serveur est injoignable. Vérifiez votre connexion.'
-
-    const data = erreur.response.data as
-      | { detail?: unknown; observation?: unknown; avis?: unknown; non_field_errors?: unknown }
-      | undefined
-
-    for (const cle of ['detail', 'observation', 'avis', 'non_field_errors'] as const) {
-      const valeur = data?.[cle]
-      if (typeof valeur === 'string' && valeur.trim()) return valeur
-      if (Array.isArray(valeur)) {
-        const texte = valeur.filter((v) => typeof v === 'string').join(' ')
-        if (texte) return texte
-      }
-    }
-    if (erreur.response.status === 400) return 'La demande ne peut pas être traitée. Vérifiez son état.'
-  }
-  return 'Une erreur inattendue est survenue.'
+  return messageErreurUtilisateur(erreur, 'Impossible de traiter la validation. Vérifiez les informations puis réessayez.')
 }
 
 function classeStatut(statut: string): string {
@@ -410,7 +392,7 @@ export function DashboardDirecteurPage() {
     ? 'Chargement des dossiers'
     : total > 0
       ? `${total} décision${total > 1 ? 's' : ''} à rendre`
-      : 'Tout est à jour'
+      : ''
 
   function ouvrirTiroir(demande: DemandeDirection) {
     setSelection(demande.id_demande)
@@ -496,8 +478,8 @@ export function DashboardDirecteurPage() {
               </div>
             </div>
             <div className="min-w-0 lg:text-right">
-              <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">Bonjour</h2>
-              <p className="men-serif text-2xl leading-tight text-[#71717B] sm:text-4xl">{titreHero}</p>
+              <h2 className="men-serif text-2xl leading-tight text-[#0A0A0A] sm:text-4xl">{nomAffichageUtilisateur(utilisateur)}</h2>
+              {titreHero && <p className="men-serif text-2xl leading-tight text-[#71717B] sm:text-4xl">{titreHero}</p>}
               <p className="mt-2 text-xs text-[#4F4F58]">{direction} · suivi des demandes en attente de décision</p>
             </div>
           </section>

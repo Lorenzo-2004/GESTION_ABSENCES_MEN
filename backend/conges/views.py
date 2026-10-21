@@ -5,12 +5,16 @@ portent les règles RG-01 à RG-10. Les vues ne font que : contrôler les droits
 appeler le service, sérialiser le résultat.
 """
 
+import hashlib
+from io import BytesIO
+
+from django.core.files.base import ContentFile
 from django.db import models, transaction
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404  # noqa: F401 - réexporté pour la vue de téléchargement
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
@@ -18,6 +22,7 @@ from django.utils import timezone
 from commun.permissions import (
     APersonnelLie,
     EstRH,
+    MSG_SANS_SERVICE,
     EstValideur,
     filtre_perimetre,
     personnel_de,
@@ -38,10 +43,19 @@ from .serializers import (
 from .services import soldes as services_soldes
 
 
+class DocumentIntegrityConflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = (
+        "Le document enregistré ne peut pas être confirmé comme intact. "
+        "Contactez le service gestionnaire avant de le réutiliser."
+    )
+    default_code = "document_integrity_conflict"
+
+
 class DemandeAbsenceViewSet(viewsets.ModelViewSet):
     """Demandes d'absence : création par l'agent, consultation selon le périmètre."""
 
-    queryset = DemandeAbsence.objects.select_related("personnel", "personnel__direction")
+    queryset = DemandeAbsence.objects.select_related("personnel", "personnel__direction", "signature_agent_compte")
     permission_classes = [permissions.IsAuthenticated]
     # Une demande ne se modifie ni ne se supprime : elle se crée, se consulte, se vise,
     # ou s'annule (action `annuler`). Cela protège les demandes validées et le solde.
@@ -72,8 +86,41 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
         # soumission valide les règles après la création : sans cette transaction
         # externe, une ValidationError laisserait une demande invalide en base.
         cible = self._personnel_cible(serializer.validated_data.pop("personnel", None))
-        demande = serializer.save(personnel=cible)
-        soumettre_demande(demande)
+        fichier_signature = serializer.validated_data.get("signature_agent")
+        if fichier_signature is None:
+            raise ValidationError({"signature_agent": "La signature est obligatoire avant la soumission."})
+
+        position = fichier_signature.tell() if hasattr(fichier_signature, "tell") else 0
+        try:
+            contenu_signature = fichier_signature.read()
+        finally:
+            if hasattr(fichier_signature, "seek"):
+                fichier_signature.seek(position)
+        empreinte = hashlib.sha256(contenu_signature).hexdigest()
+
+        demande = serializer.save(
+            personnel=cible,
+            date_signature_agent=timezone.now(),
+            signature_agent_sha256=empreinte,
+            signature_agent_compte=self.request.user,
+        )
+        try:
+            soumettre_demande(demande)
+            from .services.signatures import ajouter_trace_signature
+            from .models import TraceSignature
+
+            ajouter_trace_signature(
+                demande,
+                TraceSignature.Evenement.SIGNATURE_AGENT_ENREGISTREE,
+                self.request.user,
+                signature_sha256=empreinte,
+                details={"source": "soumission_nouvelle_demande"},
+            )
+        except Exception:
+            # Le stockage fichiers n'est pas transactionnel : retire le PNG orphelin.
+            if demande.signature_agent:
+                demande.signature_agent.delete(save=False)
+            raise
         serializer.instance = demande
 
     def _personnel_cible(self, personnel_demande):
@@ -116,10 +163,14 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
         from .enums import StatutDemande
 
         personnel = personnel_de(request.user)
-        if role_de(request.user) not in (Role.CHEF_SERVICE, Role.RH):
+        role = role_de(request.user)
+        if role not in (Role.CHEF_SERVICE, Role.RH):
             raise PermissionDenied("Réservé au chef de service ou au responsable RH de service.")
-        if personnel is None or personnel.service_id is None:
-            raise PermissionDenied("Votre compte n'est associé à aucun service.")
+        if personnel.service_id is None:
+            # La RH sans service n'a aucune équipe à viser : file vide, pas d'erreur.
+            if role == Role.RH:
+                return Response([])
+            raise PermissionDenied(MSG_SANS_SERVICE)
 
         requete = (
             DemandeAbsence.objects.select_related("personnel")
@@ -250,13 +301,123 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated])
     def formulaire(self, request, pk=None):
-        """Formulaire officiel pré-rempli (PDF, CDC objectif 3)."""
+        """Génère une copie officielle unique, la scelle et sert toujours les mêmes octets."""
+        from .regles import TYPES_AVEC_FORMULAIRE_OFFICIEL
         from .services.pdf import generer_formulaire_pdf
+        from .services.signatures import (
+            ajouter_trace_signature,
+            sha256_octets,
+            verifier_integrite_demande,
+        )
+        from .models import TraceSignature
+
+        demande_visible = self.get_object()  # applique d'abord le périmètre RBAC
+        fichier_cree = None
+        demande = demande_visible
+        contenu_pdf = b""
+        nom = f"formulaire-{demande_visible.numero_enregistrement or demande_visible.pk}.pdf"
+        try:
+            with transaction.atomic():
+                # Verrouille uniquement la demande : éviter le FOR UPDATE sur des jointures
+                # externes nullable tout en empêchant deux générations concurrentes.
+                demande = DemandeAbsence.objects.select_for_update(of=("self",)).get(
+                    pk=demande_visible.pk
+                )
+                if demande.type_absence not in TYPES_AVEC_FORMULAIRE_OFFICIEL:
+                    raise ValidationError({
+                        "type_absence": (
+                            "La fiche officielle est réservée au congé annuel, à la permission "
+                            "et à l'autorisation d'absence. Pour ce type, aucune fiche PDF n'est requise."
+                        )
+                    })
+
+                if demande.pdf_officiel:
+                    with demande.pdf_officiel.storage.open(demande.pdf_officiel.name, "rb") as fichier:
+                        contenu_pdf = fichier.read()
+                    controle = verifier_integrite_demande(demande)
+                    if (
+                        controle["document_integrite"] is not True
+                        or controle["journal_integrite"] is not True
+                        or controle["signature_integrite"] is False
+                    ):
+                        raise DocumentIntegrityConflict()
+                    if not contenu_pdf.startswith(b"%PDF-"):
+                        raise DocumentIntegrityConflict()
+                else:
+                    flux = generer_formulaire_pdf(demande)
+                    contenu_pdf = flux.getvalue() if hasattr(flux, "getvalue") else flux.read()
+                    if not contenu_pdf.startswith(b"%PDF-"):
+                        raise ValidationError("Le formulaire n'a pas pu être généré correctement.")
+
+                    empreinte_pdf = sha256_octets(contenu_pdf)
+                    demande.pdf_officiel.save(nom, ContentFile(contenu_pdf), save=False)
+                    fichier_cree = demande.pdf_officiel.name
+                    demande.pdf_officiel_sha256 = empreinte_pdf
+                    demande.pdf_officiel_genere_le = timezone.now()
+                    demande.pdf_officiel_genere_par = request.user
+                    demande.save(update_fields=[
+                        "pdf_officiel", "pdf_officiel_sha256", "pdf_officiel_genere_le",
+                        "pdf_officiel_genere_par",
+                    ])
+                    ajouter_trace_signature(
+                        demande,
+                        TraceSignature.Evenement.PDF_OFFICIEL_SCELE,
+                        request.user,
+                        pdf_sha256=empreinte_pdf,
+                        details={"nom_document": nom, "taille_octets": len(contenu_pdf)},
+                    )
+                    demande.refresh_from_db()
+                    controle = verifier_integrite_demande(demande)
+                    if (
+                        controle["document_integrite"] is not True
+                        or controle["journal_integrite"] is not True
+                        or controle["signature_integrite"] is False
+                    ):
+                        raise DocumentIntegrityConflict()
+
+                ajouter_trace_signature(
+                    demande,
+                    TraceSignature.Evenement.PDF_OFFICIEL_TELECHARGE,
+                    request.user,
+                    pdf_sha256=demande.pdf_officiel_sha256,
+                    details={"taille_octets": len(contenu_pdf)},
+                )
+        except Exception:
+            # Si la transaction échoue après écriture du fichier, supprime l'artefact orphelin.
+            if fichier_cree:
+                try:
+                    demande.pdf_officiel.storage.delete(fichier_cree)
+                except Exception:
+                    pass
+            raise
+
+        return FileResponse(
+            BytesIO(contenu_pdf),
+            as_attachment=True,
+            filename=nom,
+            content_type="application/pdf",
+        )
+
+    @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="integrite")
+    def integrite(self, request, pk=None):
+        """Vérifie la signature, le PDF scellé et la chaîne d'audit associée."""
+        from .services.signatures import verifier_integrite_demande
 
         demande = self.get_object()
-        flux = generer_formulaire_pdf(demande)
-        nom = f"formulaire-{demande.numero_enregistrement or demande.pk}.pdf"
-        return FileResponse(flux, as_attachment=True, filename=nom, content_type="application/pdf")
+        resultat = verifier_integrite_demande(demande)
+        historique = [
+            {
+                "evenement": trace.get_evenement_display(),
+                "date": trace.date_evenement,
+                "acteur": trace.acteur_identifiant,
+                "empreinte_evenement": trace.empreinte_evenement,
+                "empreinte_pdf": trace.pdf_sha256 or None,
+            }
+            for trace in demande.traces_signature.order_by("id_trace")
+        ]
+        resultat["historique"] = historique
+        resultat["numero_demande"] = demande.numero_enregistrement
+        return Response(resultat)
 
 
 class AValiderViewSet(viewsets.ViewSet):
@@ -274,8 +435,10 @@ class AValiderViewSet(viewsets.ViewSet):
         )
 
         if role in (Role.CHEF_SERVICE, Role.RH):
-            if personnel is None or personnel.service_id is None:
-                raise PermissionDenied("Votre compte n'est associé à aucun service.")
+            if personnel.service_id is None:
+                if role == Role.RH:
+                    return Response([])
+                raise PermissionDenied(MSG_SANS_SERVICE)
             requete = requete.filter(
                 statut_demande=StatutDemande.EN_ATTENTE,
                 personnel__service_id=personnel.service_id,
@@ -365,6 +528,9 @@ class DecisionCongeViewSet(viewsets.ModelViewSet):
         Répond avec les champs reconnus et, si l'IM correspond à un agent connu, ses
         informations — ce qui permet à la RH de vérifier avant de confirmer (sequence1).
         """
+        from django.db.models import Value
+        from django.db.models.functions import Replace
+
         from .services.ocr import extraire_donnees_decision
 
         corps = ScanDecisionSerializer(data=request.data)
@@ -374,19 +540,31 @@ class DecisionCongeViewSet(viewsets.ModelViewSet):
         agent = None
         if extrait.get("im"):
             from personnels.models import Personnel
+            from personnels.serializers import PersonnelSerializer
 
-            trouve = Personnel.objects.filter(im=extrait["im"]).first()
+            # L'IM est enregistré avec ou sans espaces/points selon la saisie : on compare
+            # donc les chiffres seuls des deux côtés.
+            trouve = (
+                Personnel.objects.annotate(
+                    im_chiffres=Replace(Replace("im", Value(" "), Value("")), Value("."), Value(""))
+                )
+                .filter(im_chiffres=extrait["im"])
+                .first()
+            )
             if trouve is not None:
-                from personnels.serializers import PersonnelSerializer
-
                 agent = PersonnelSerializer(trouve).data
 
+        numero = extrait.get("numero_decision")
         return Response(
             {
                 "donnees_extraites": extrait,
                 "agent": agent,
                 "statut_agent": agent["statut"] if agent else None,
                 "nature": extrait.get("source"),
+                # Le numéro de décision est unique : on prévient la RH avant l'enregistrement.
+                "numero_deja_utilise": bool(
+                    numero and DecisionConge.objects.filter(numero_decision=numero).exists()
+                ),
             }
         )
 

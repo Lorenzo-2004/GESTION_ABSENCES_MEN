@@ -16,12 +16,15 @@ export interface NouvelleDemande {
   type_absence: TypeAbsence
   /** Année de droits imputée ; obligatoire pour un congé annuel. */
   annee_titre?: number
-  /** Obligatoire pour les demandes de maternité et de paternité (RG-11). */
+  /** Obligatoire pour les demandes de maternité et de paternité. */
   date_evenement_prevue?: string
   motif: string
-  date_debut: string
-  date_fin: string
+  /** Facultatives côté formulaire pour maternité/paternité : la période est calculée automatiquement. */
+  date_debut?: string
+  date_fin?: string
   lieu_jouissance: string
+  /** PNG dessiné dans le champ de signature avant l'envoi. */
+  signature_agent: string
   fichier_justificatif?: File | null
 }
 
@@ -37,6 +40,9 @@ export interface DemandeCreee {
   date_debut: string
   date_fin: string
   nombre_jours: number
+  date_signature_agent?: string | null
+  signature_agent_sha256?: string
+  signature_agent_compte?: string | null
 }
 
 export async function creerDemandeConge(
@@ -64,9 +70,18 @@ export async function creerDemandeConge(
   }
 
   donnees.append('motif', demande.motif)
-  donnees.append('date_debut', demande.date_debut)
-  donnees.append('date_fin', demande.date_fin)
+
+  const periodeAutomatique =
+    demande.type_absence === 'MATERNITE' || demande.type_absence === 'PATERNITE'
+
+  // Pour maternité/paternité, les dates de début, de fin et la durée sont calculées automatiquement.
+  if (!periodeAutomatique) {
+    if (demande.date_debut) donnees.append('date_debut', demande.date_debut)
+    if (demande.date_fin) donnees.append('date_fin', demande.date_fin)
+  }
+
   donnees.append('lieu_jouissance', demande.lieu_jouissance)
+  donnees.append('signature_agent', demande.signature_agent)
 
   if (demande.fichier_justificatif) {
     donnees.append(

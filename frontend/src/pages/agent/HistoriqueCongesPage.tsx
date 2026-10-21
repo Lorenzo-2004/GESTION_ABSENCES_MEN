@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { isAxiosError } from 'axios'
 import { Navigate } from 'react-router'
 
 import { useAuth } from '../../contexts/useAuth'
@@ -17,6 +16,7 @@ import {
   Tiroir,
   type VueAgent,
 } from '../../components/men/miseEnPageRH'
+import { messageErreurUtilisateur } from '../../lib/messages'
 
 const STATUTS: { valeur: StatutHistorique; libelle: string }[] = [
   { valeur: 'EN_ATTENTE', libelle: 'En attente' },
@@ -96,7 +96,7 @@ const TONS_KPI = {
 const TITRES_VUES: Record<VueAgent, { titre: string; description: string }> = {
   apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et soldes' },
   demandes: { titre: 'Mes demandes', description: 'Consultez vos demandes et leur état' },
-  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Remplissez le formulaire officiel' },
+  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Déposez une demande ou une annonce d’absence' },
   soldes: { titre: 'Mes soldes', description: 'Droits à congé de l’année en cours' },
   historique: { titre: 'Historique', description: 'Détail des validations par les responsables' },
   profil: { titre: 'Mon profil', description: 'Informations du personnel' },
@@ -135,14 +135,7 @@ function dateHeureLisible(date: string): string {
 }
 
 function erreurLisible(erreur: unknown): string {
-  if (isAxiosError(erreur)) {
-    if (erreur.response?.status === 401) return 'Votre session a expiré. Reconnectez-vous.'
-    if (erreur.response?.status === 403) return "Vous ne pouvez pas consulter cet historique."
-    const detail = erreur.response?.data?.detail
-    if (typeof detail === 'string') return detail
-    if (!erreur.response) return 'Impossible de joindre le serveur. Vérifiez que Django fonctionne.'
-  }
-  return "L'historique n'a pas pu être chargé."
+  return messageErreurUtilisateur(erreur, "L’historique n’a pas pu être chargé. Réessayez dans quelques instants.")
 }
 
 /* ------------------------------------------------------------------ */
@@ -369,8 +362,8 @@ export function HistoriqueCongesPage() {
           </section>
 
           <section className={`rh-in flex min-w-0 flex-col justify-center gap-6 p-6 sm:flex-row sm:items-center ${carte}`} style={delai(120)}>
-            <div className="mx-auto grid h-32 w-32 place-items-center rounded-full bg-[#1B1BFF]/10 sm:mx-0">
-              <div className="text-center">
+            <div className="mx-auto grid h-36 w-36 shrink-0 place-items-center rounded-full border border-[#D9DDFF] bg-[#F6F7FF] p-[7px] shadow-[0_8px_22px_-12px_rgba(27,27,255,.22)] ring-8 ring-[#E9EBFF]/80 sm:mx-0">
+              <div className="grid h-full w-full place-items-center rounded-full border border-[#BFC6FF] bg-[#E5E9FF] text-center shadow-[inset_0_1px_3px_rgba(27,27,255,.05)]">
                 <p className="men-serif text-3xl leading-none tabular-nums text-[#0A0A0A]">{chargementListe ? '—' : total}</p>
                 <p className="mt-1 text-xs font-medium text-[#86868B]">demandes</p>
               </div>

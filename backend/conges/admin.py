@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import DecisionConge, DemandeAbsence, SoldeConge, ValidationWorkflow
+from .models import DecisionConge, DemandeAbsence, SoldeConge, TraceSignature, ValidationWorkflow
 
 
 @admin.register(SoldeConge)
@@ -29,3 +29,21 @@ class DemandeAbsenceAdmin(admin.ModelAdmin):
     list_filter = ("type_absence", "statut_demande")
     search_fields = ("numero_enregistrement", "personnel__im", "personnel__nom")
     inlines = [ValidationInline]
+
+
+@admin.register(TraceSignature)
+class TraceSignatureAdmin(admin.ModelAdmin):
+    list_display = ("id_trace", "demande", "evenement", "date_evenement", "acteur_identifiant", "empreinte_evenement")
+    list_filter = ("evenement", "date_evenement")
+    search_fields = ("demande__numero_enregistrement", "demande__personnel__im", "acteur_identifiant")
+    readonly_fields = tuple(field.name for field in TraceSignature._meta.fields)
+    ordering = ("-date_evenement",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

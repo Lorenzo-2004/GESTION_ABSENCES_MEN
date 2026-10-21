@@ -2,8 +2,13 @@
 
 from datetime import date
 from io import BytesIO
+import base64
+import hashlib
+
+from PIL import Image, ImageDraw
 
 import pdfplumber
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from pypdf import PdfReader
 from rest_framework import status
@@ -12,6 +17,30 @@ from rest_framework.test import APITestCase
 from organisation.models import Direction, Service
 from personnels.enums import Role, Statut
 from personnels.models import Personnel, Utilisateur
+
+from .models import DecisionConge, DemandeAbsence, TraceSignature
+
+
+def traits_du_bloc_type(contenu_pdf):
+    """Traits horizontaux du bloc « DEMANDE DE : » : [(x début, x fin, distance du haut)]."""
+    with pdfplumber.open(BytesIO(contenu_pdf)) as pdf:
+        return sorted(
+            (round(t["x0"], 1), round(t["x1"], 1), round(t["top"], 1))
+            for t in pdf.pages[0].lines
+            if 150 < t["top"] < 215 and t["x0"] > 380 and abs(t["top"] - t["bottom"]) < 2
+        )
+
+
+def _signature_test_data_url():
+    image = Image.new("RGBA", (720, 180), (0, 0, 0, 0))
+    dessin = ImageDraw.Draw(image)
+    dessin.line([(35, 115), (95, 55), (140, 120), (205, 60), (275, 115), (330, 90), (390, 105)], fill=(17, 24, 39, 255), width=5)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+SIGNATURE_TEST_DATA_URI = _signature_test_data_url()
 
 MOT_DE_PASSE = "MotDePasse!2026"
 
@@ -111,7 +140,8 @@ class DemandeAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-03",
             },
@@ -121,6 +151,23 @@ class DemandeAPITests(BaseAPICase):
         self.assertEqual(reponse.data["nombre_jours"], 2)
         self.assertEqual(reponse.data["statut_demande"], "EN_ATTENTE")
         self.assertTrue(reponse.data["numero_enregistrement"].startswith("DA-"))
+        self.assertEqual(len(reponse.data["signature_agent_sha256"]), 64)
+        self.assertEqual(reponse.data["signature_agent_compte"], self.compte_agent.username)
+        self.assertIsNotNone(reponse.data["date_signature_agent"])
+
+    def test_signature_est_obligatoire_avant_soumission(self):
+        self.connecter(self.compte_agent)
+        reponse = self.client.post(
+            "/api/demandes/",
+            {
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo",
+                "type_absence": "PERMISSION", "date_debut": "2026-03-02",
+                "date_fin": "2026-03-03",
+            },
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST, reponse.data)
+        self.assertIn("signature_agent", reponse.data.get("erreurs", {}))
 
     def test_api_refuse_permission_depassant_plafond_mensuel(self):
         self.connecter(self.compte_agent)
@@ -128,7 +175,8 @@ class DemandeAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-05",
             },
@@ -148,7 +196,8 @@ class DemandeAPITests(BaseAPICase):
         premiere = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "AUTORISATION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "AUTORISATION",
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-06",
             },
@@ -166,7 +215,8 @@ class DemandeAPITests(BaseAPICase):
         seconde = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "AUTORISATION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "AUTORISATION",
                 "date_debut": "2026-03-16",
                 "date_fin": "2026-03-16",
             },
@@ -186,7 +236,8 @@ class DemandeAPITests(BaseAPICase):
         premiere = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-03",
             },
@@ -204,7 +255,8 @@ class DemandeAPITests(BaseAPICase):
         seconde = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-03-10",
                 "date_fin": "2026-03-11",
             },
@@ -223,7 +275,8 @@ class DemandeAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-01-30",
                 "date_fin": "2026-02-01",
             },
@@ -243,7 +296,8 @@ class DemandeAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-03",
                 "nombre_jours": 99,
@@ -264,7 +318,8 @@ class DemandeAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-03-03",
                 "date_fin": "2026-03-02",
             },
@@ -290,7 +345,7 @@ class DemandeAPITests(BaseAPICase):
         self.connecter(Utilisateur.objects.get(username="ustag"))
         reponse = self.client.post(
             "/api/demandes/",
-            {"type_absence": "CONGE_ANNUEL", "date_debut": "2026-03-02", "date_fin": "2026-03-06"},
+            {"signature_agent": SIGNATURE_TEST_DATA_URI, "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL", "date_debut": "2026-03-02", "date_fin": "2026-03-06"},
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
@@ -359,7 +414,8 @@ class CircuitValidationAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "CONGE_ANNUEL",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL",
                 "annee_titre": 2026,
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-16",
@@ -378,7 +434,8 @@ class CircuitValidationAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "CONGE_ANNUEL",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL",
                 "annee_titre": 2026,
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-21",
@@ -401,7 +458,8 @@ class CircuitValidationAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "CONGE_ANNUEL",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL",
                 "annee_titre": 2025,
                 "date_debut": "2026-11-02",
                 "date_fin": "2026-11-16",
@@ -532,7 +590,7 @@ class CircuitValidationAPITests(BaseAPICase):
         self.assertIn("02/03/2026", texte)
         self.assertIn("16/03/2026", texte)
         self.assertIn("15", texte)  # solde restant après la demande dans ce scénario
-        self.assertIn("X", texte)  # coche superposée pour le congé annuel
+        self.assertNotIn("X", texte)  # le type est souligné, plus coché
         mots = pdf.pages[0].extract_words()
         haut_fin = next(item["top"] for item in mots if item["text"] == "16/03/2026")
         jours_corps = [
@@ -540,21 +598,16 @@ class CircuitValidationAPITests(BaseAPICase):
             if item["text"] == "15" and 180 < item["x0"] < 350
         ]
         self.assertTrue(jours_corps, "Nombre de jours demandé absent du corps du formulaire.")
-        # Le nombre de jours du corps doit être après les champs DU/AU.
-        self.assertGreater(jours_corps[0], haut_fin)
+        # Sur le formulaire, « NOMBRE DE JOURS DEMANDES » est AU-DESSUS de la ligne DU/AU.
+        self.assertLess(jours_corps[0], haut_fin)
 
-    def test_formulaire_pdf_coche_le_type_d_absence(self):
-        """La case du type d'absence demandé est cochée."""
+    def test_formulaire_pdf_souligne_le_type_d_absence(self):
+        """CONGE est souligné (et lui seul), pas coché d'un X."""
         demande_id = self._conge_annuel()  # congé annuel
         self.connecter(self.compte_agent)
         reponse = self.client.get(f"/api/demandes/{demande_id}/formulaire/")
         contenu = b"".join(reponse.streaming_content)
 
-        with pdfplumber.open(BytesIO(contenu)) as pdf:
-            texte = pdf.pages[0].extract_text() or ""
-
-        # Le libellé « CONGE » est dans l'image scannée, mais la coche est un calque texte.
-        self.assertIn("X", texte)
         page = PdfReader(BytesIO(contenu)).pages[0]
         image_xobjects = [
             obj.get_object()
@@ -563,10 +616,13 @@ class CircuitValidationAPITests(BaseAPICase):
         ]
         self.assertEqual(len(image_xobjects), 1)
         self.assertEqual((image_xobjects[0]["/Width"], image_xobjects[0]["/Height"]), (997, 1337))
-        mots = pdfplumber.open(BytesIO(contenu)).pages[0].extract_words()
-        # La coche doit être dans la rangée de CONGE, pas dans l'en-tête.
-        croix = next(item for item in mots if item["text"] == "X")
-        self.assertLess(croix["top"], 200)
+
+        traits = traits_du_bloc_type(contenu)
+        self.assertEqual(len(traits), 1, traits)
+        x0, x1, haut = traits[0]
+        self.assertAlmostEqual(haut, 169.8, delta=1.5)  # sous « CONGE »
+        self.assertAlmostEqual(x0, 398.5, delta=1.5)
+        self.assertAlmostEqual(x1, 434.0, delta=1.5)
 
     def test_formulaire_pdf_affiche_annee_titre_choisie(self):
         """Le PDF affiche l'année choisie, indépendamment des dates du congé."""
@@ -576,7 +632,8 @@ class CircuitValidationAPITests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "CONGE_ANNUEL",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL",
                 "annee_titre": 2025,
                 "date_debut": "2026-11-02",
                 "date_fin": "2026-11-16",
@@ -767,7 +824,7 @@ class ConformiteDiagrammesTests(BaseAPICase):
         self.connecter(personnel_compte)
         reponse = self.client.post(
             "/api/demandes/",
-            {"type_absence": "PERMISSION", "date_debut": "2026-05-04", "date_fin": "2026-05-05"},
+            {"signature_agent": SIGNATURE_TEST_DATA_URI, "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION", "date_debut": "2026-05-04", "date_fin": "2026-05-05"},
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
@@ -811,7 +868,8 @@ class ConformiteDiagrammesTests(BaseAPICase):
         creation = self.client.post(
             "/api/demandes/",
             {
-                "type_absence": "CONGE_ANNUEL",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL",
                 "annee_titre": 2026,
                 "date_debut": "2026-03-02",
                 "date_fin": "2026-03-16",
@@ -877,7 +935,8 @@ class ConformiteDiagrammesTests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "personnel": self.agent.pk, "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "personnel": self.agent.pk, "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-06-01", "date_fin": "2026-06-02",
             },
             format="json",
@@ -900,7 +959,8 @@ class ConformiteDiagrammesTests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "personnel": etranger.pk, "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "personnel": etranger.pk, "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-06-01", "date_fin": "2026-06-02",
             },
             format="json",
@@ -917,7 +977,8 @@ class ConformiteDiagrammesTests(BaseAPICase):
         reponse = self.client.post(
             "/api/demandes/",
             {
-                "personnel": autre.pk, "type_absence": "PERMISSION",
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "personnel": autre.pk, "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION",
                 "date_debut": "2026-06-01", "date_fin": "2026-06-02",
             },
             format="json",
@@ -932,3 +993,352 @@ class ConformiteDiagrammesTests(BaseAPICase):
         self.assertEqual(reponse.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(reponse.data), 1)
         self.assertEqual(reponse.data[0]["personnel_nom"], self.agent.nom_complet)
+
+
+class SaisieFormulaireAPITests(BaseAPICase):
+    """Maternité/paternité automatiques, justificatif facultatif, formulaire complet."""
+
+    def _poster(self, corps):
+        self.connecter(self.compte_agent)
+        corps.setdefault("signature_agent", SIGNATURE_TEST_DATA_URI)
+        return self.client.post("/api/demandes/", corps, format="json")
+
+    def test_paternite_sans_dates_calcule_15_jours(self):
+        reponse = self._poster({
+            "type_absence": "PATERNITE", "motif": "Naissance", "lieu_jouissance": "Antananarivo",
+            "date_evenement_prevue": "2026-03-15",
+        })
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
+        self.assertEqual(reponse.data["date_debut"], "2026-03-15")
+        self.assertEqual(reponse.data["date_fin"], "2026-03-29")
+        self.assertEqual(reponse.data["nombre_jours"], 15)
+        self.assertIsNone(reponse.data["justificatif_url"])
+
+    def test_paternite_sans_date_prevue_refusee(self):
+        reponse = self._poster({
+            "type_absence": "PATERNITE", "motif": "Naissance", "lieu_jouissance": "Antananarivo",
+        })
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("date_evenement_prevue", reponse.data["erreurs"])
+
+    def test_dates_obligatoires_pour_une_permission(self):
+        reponse = self._poster({
+            "type_absence": "PERMISSION", "motif": "Famille", "lieu_jouissance": "Antananarivo",
+        })
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("date_debut", reponse.data["erreurs"])
+        self.assertIn("date_fin", reponse.data["erreurs"])
+
+    def test_motif_et_lieu_obligatoires(self):
+        reponse = self._poster({
+            "type_absence": "PERMISSION", "date_debut": "2026-03-02", "date_fin": "2026-03-03",
+        })
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("motif", reponse.data["erreurs"])
+        self.assertIn("lieu_jouissance", reponse.data["erreurs"])
+
+    def test_champ_inconnu_refuse_au_lieu_d_etre_ignore(self):
+        reponse = self._poster({
+            "type_absence": "PERMISSION", "motif": "Famille", "lieu_jouissance": "Tana",
+            "date_debut": "2026-03-02", "date_fin": "2026-03-03", "adresse_conge": "Lot 12",
+        })
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("adresse_conge", reponse.data["erreurs"])
+
+    def test_url_du_justificatif_est_telechargeable(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.connecter(self.compte_agent)
+        reponse = self.client.post(
+            "/api/demandes/",
+            {
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "type_absence": "MISSION", "motif": "Ordre de mission", "lieu_jouissance": "Toamasina",
+                "date_debut": "2026-03-02", "date_fin": "2026-03-04",
+                "fichier_justificatif": SimpleUploadedFile("ordre.pdf", b"%PDF-1.4 test"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
+        telechargement = self.client.get(reponse.data["justificatif_url"])
+        self.assertEqual(telechargement.status_code, status.HTTP_200_OK)
+
+
+class ScanDecisionAPITests(BaseAPICase):
+    """La vue de scan retrouve l'agent par son IM, même enregistré avec des espaces."""
+
+    def _pdf_decision(self, numero="2205", im="123456"):
+        import io
+
+        from reportlab.pdfgen import canvas
+
+        flux = io.BytesIO()
+        c = canvas.Canvas(flux)
+        y = 800
+        for ligne in (
+            f"DECISION N° {numero} MEN/SG/DRH",
+            f"IM : {im}  Indice 1250",
+            "un conge de 30 jours au titre de l'annee 2026",
+            "Budget General, Imputation 2.1.1, signature de la direction",
+        ):
+            c.drawString(60, y, ligne)
+            y -= 30
+        c.save()
+        return SimpleUploadedFile("decision.pdf", flux.getvalue())
+
+    def test_agent_retrouve_malgre_les_espaces_dans_l_im(self):
+        titulaire = Personnel.objects.create(
+            im="123 456", cin="CINSCAN1", direction=self.direction, service=self.service,
+            nom="RAKOTO", prenoms="Jean", sexe="M", date_naissance=date(1985, 5, 5),
+            statut=Statut.FONCTIONNAIRE,
+        )
+        self.connecter(self.compte_rh)
+        reponse = self.client.post("/api/decisions/scan/", {"fichier": self._pdf_decision()})
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK, reponse.data)
+        self.assertEqual(reponse.data["donnees_extraites"]["annees"], [2026])
+        self.assertEqual(reponse.data["agent"]["id_personnel"], titulaire.pk)
+        self.assertFalse(reponse.data["numero_deja_utilise"])
+
+    def test_numero_deja_utilise_signale(self):
+        DecisionConge.objects.create(
+            numero_decision="2205", personnel=self.agent, direction=self.direction,
+            annees_titre="2025", date_emission=date(2025, 1, 5),
+        )
+        self.connecter(self.compte_rh)
+        reponse = self.client.post("/api/decisions/scan/", {"fichier": self._pdf_decision()})
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK, reponse.data)
+        self.assertTrue(reponse.data["numero_deja_utilise"])
+
+
+class FormulairePdfRemplissageTests(BaseAPICase):
+    """Soulignement du type d'absence et emplacement des valeurs sur le formulaire officiel."""
+
+    def _formulaire(self, type_absence, **plus):
+        self.connecter(self.compte_agent)
+        corps = {
+            "type_absence": type_absence, "motif": "Repos", "lieu_jouissance": "Fianarantsoa",
+            "date_debut": "2026-03-02", "date_fin": "2026-03-03",
+        }
+        corps.update(plus)
+        corps.setdefault("signature_agent", SIGNATURE_TEST_DATA_URI)
+        reponse = self.client.post("/api/demandes/", corps, format="json")
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
+        pdf = self.client.get(f"/api/demandes/{reponse.data['id_demande']}/formulaire/")
+        self.assertEqual(pdf.status_code, status.HTTP_200_OK)
+        return b"".join(pdf.streaming_content), reponse.data
+
+    def test_signature_de_la_demande_est_integree_au_pdf_officiel(self):
+        contenu, donnees = self._formulaire("PERMISSION")
+        lecteur = PdfReader(BytesIO(contenu))
+        ressources = lecteur.pages[0]["/Resources"].get_object()
+        objets = ressources.get("/XObject")
+        if objets is None:
+            self.fail("Le PDF devrait contenir les images du formulaire et de la signature.")
+        images = [
+            objet.get_object() for objet in objets.get_object().values()
+            if objet.get_object().get("/Subtype") == "/Image"
+        ]
+        self.assertGreaterEqual(len(images), 2, f"La signature de la demande {donnees['id_demande']} n'a pas été incorporée au PDF.")
+
+    def test_pdf_est_scelle_hash_et_journal_sont_verifiables(self):
+        contenu, donnees = self._formulaire("PERMISSION")
+        demande = DemandeAbsence.objects.get(pk=donnees["id_demande"])
+
+        self.assertTrue(demande.pdf_officiel)
+        self.assertEqual(demande.pdf_officiel_sha256, hashlib.sha256(contenu).hexdigest())
+        self.assertIsNotNone(demande.pdf_officiel_genere_le)
+        self.assertEqual(demande.pdf_officiel_genere_par, self.compte_agent)
+
+        evenements = list(
+            demande.traces_signature.order_by("id_trace").values_list("evenement", flat=True)
+        )
+        self.assertEqual(
+            evenements,
+            [
+                TraceSignature.Evenement.SIGNATURE_AGENT_ENREGISTREE,
+                TraceSignature.Evenement.PDF_OFFICIEL_SCELE,
+                TraceSignature.Evenement.PDF_OFFICIEL_TELECHARGE,
+            ],
+        )
+
+        verification = self.client.get(f"/api/demandes/{demande.pk}/integrite/")
+        self.assertEqual(verification.status_code, status.HTTP_200_OK, verification.data)
+        self.assertTrue(verification.data["signature_integrite"])
+        self.assertTrue(verification.data["document_integrite"])
+        self.assertTrue(verification.data["journal_integrite"])
+        self.assertTrue(verification.data["integrite_globale"])
+        self.assertEqual(len(verification.data["historique"]), 3)
+
+        seconde_reponse = self.client.get(f"/api/demandes/{demande.pk}/formulaire/")
+        self.assertEqual(seconde_reponse.status_code, status.HTTP_200_OK)
+        second_pdf = b"".join(seconde_reponse.streaming_content)
+        self.assertEqual(second_pdf, contenu, "Le PDF scellé doit rester identique aux téléchargements suivants.")
+        self.assertEqual(
+            demande.traces_signature.filter(
+                evenement=TraceSignature.Evenement.PDF_OFFICIEL_SCELE
+            ).count(),
+            1,
+        )
+
+    def test_telechargement_refuse_un_pdf_modifie(self):
+        _, donnees = self._formulaire("PERMISSION")
+        demande = DemandeAbsence.objects.get(pk=donnees["id_demande"])
+        stockage = demande.pdf_officiel.storage
+        nom_stockage = demande.pdf_officiel.name
+        stockage.delete(nom_stockage)
+        nom_corrompu = stockage.save(nom_stockage, ContentFile(b"contenu modifie volontairement"))
+        try:
+            reponse = self.client.get(f"/api/demandes/{demande.pk}/formulaire/")
+            self.assertEqual(reponse.status_code, 409, getattr(reponse, "data", None))
+        finally:
+            stockage.delete(nom_corrompu)
+
+    def test_les_traces_de_signature_sont_non_modifiables(self):
+        _, donnees = self._formulaire("PERMISSION")
+        demande = DemandeAbsence.objects.get(pk=donnees["id_demande"])
+        trace = demande.traces_signature.first()
+        self.assertIsNotNone(trace)
+        with self.assertRaises(Exception):
+            trace.save()
+        with self.assertRaises(Exception):
+            TraceSignature.objects.filter(pk=trace.pk).update(acteur_identifiant="modifie")
+        with self.assertRaises(Exception):
+            trace.delete()
+
+    def test_permission_soulignee(self):
+        contenu, _ = self._formulaire("PERMISSION")
+        traits = traits_du_bloc_type(contenu)
+        self.assertEqual(len(traits), 1, traits)
+        x0, x1, haut = traits[0]
+        self.assertAlmostEqual(haut, 186.6, delta=1.5)  # sous « PERMISSION »
+        self.assertAlmostEqual(x1, 460.2, delta=1.5)
+
+    def test_annonces_refusent_la_generation_de_fiche_officielle(self):
+        """Les annonces n'utilisent pas le formulaire PDF officiel MEN."""
+        self.connecter(self.compte_agent)
+        types_annonce = ("MISSION", "MATERNITE", "PATERNITE", "REPOS_SANITAIRE")
+
+        for type_absence in types_annonce:
+            with self.subTest(type_absence=type_absence):
+                demande = DemandeAbsence.objects.create(
+                    personnel=self.agent,
+                    type_absence=type_absence,
+                    motif="Annonce de test",
+                    date_debut=date(2026, 10, 21),
+                    date_fin=date(2026, 10, 22),
+                    nombre_jours=2,
+                    lieu_jouissance="Antananarivo",
+                )
+                reponse = self.client.get(f"/api/demandes/{demande.pk}/formulaire/")
+                self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST, reponse.data)
+                self.assertIn("type_absence", reponse.data.get("erreurs", reponse.data))
+
+    def test_valeurs_sur_les_bonnes_lignes(self):
+        contenu, donnees = self._formulaire("PERMISSION")
+        with pdfplumber.open(BytesIO(contenu)) as pdf:
+            mots = pdf.pages[0].extract_words()
+
+        def haut_de(texte, x_min=0, x_max=600):
+            return next(m["top"] for m in mots if m["text"] == texte and x_min < m["x0"] < x_max)
+
+        # Le nombre de jours (2) est sur la ligne « NOMBRE DE JOURS DEMANDES », au-dessus du DU/AU.
+        jours = haut_de("2", 250, 380)
+        self.assertLess(jours, haut_de("02/03/2026"))
+        # Le motif est sur sa propre ligne, sous les dates.
+        self.assertGreater(haut_de("Repos"), haut_de("02/03/2026"))
+        # Le corps d'appartenance commence après son libellé, pas au bord de la page.
+        corps = self.agent.corps
+        premier_mot = corps.split()[0]
+        self.assertLess(haut_de(premier_mot, 330, 420) - haut_de(self.agent.im), 3)
+
+    def test_numero_d_ordre_et_date_de_la_demande_sont_ecrits(self):
+        contenu, donnees = self._formulaire("PERMISSION")
+        with pdfplumber.open(BytesIO(contenu)) as pdf:
+            texte = pdf.pages[0].extract_text() or ""
+        numero_ordre = donnees["numero_enregistrement"].rsplit("-", 1)[-1]
+        self.assertIn(numero_ordre, texte)
+        self.assertIn(date.today().strftime("%d/%m/%Y"), texte)
+
+
+class CircuitRHChefServiceTests(BaseAPICase):
+    """Le compte RH face au circuit de visa : jamais de refus trompeur, messages précis."""
+
+    def _demande(self, compte):
+        self.connecter(compte)
+        reponse = self.client.post(
+            "/api/demandes/",
+            {
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "type_absence": "PERMISSION", "motif": "Famille", "lieu_jouissance": "Antananarivo",
+                "date_debut": "2026-03-02", "date_fin": "2026-03-03",
+            },
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
+        return reponse.data["id_demande"]
+
+    def test_rh_sans_service_a_des_files_vides_et_non_une_erreur(self):
+        self.connecter(self.compte_rh)  # la RH de la base de test n'a aucun service
+        for url in ("/api/demandes/en-attente-service/", "/api/a-valider/"):
+            reponse = self.client.get(url)
+            self.assertEqual(reponse.status_code, status.HTTP_200_OK, (url, reponse.data))
+            self.assertEqual(reponse.data, [])
+
+    def test_chef_sans_service_recoit_un_message_precis(self):
+        self.chef.service = None
+        self.chef.save()
+        self.connecter(self.compte_chef)
+        for url in ("/api/demandes/en-attente-service/", "/api/a-valider/"):
+            reponse = self.client.get(url)
+            self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN)
+            self.assertIn("aucun service", reponse.data["detail"])
+
+    def test_rh_sans_service_ne_peut_pas_viser_et_comprend_pourquoi(self):
+        id_demande = self._demande(self.compte_agent)
+        self.connecter(self.compte_rh)
+        reponse = self.client.post(
+            f"/api/demandes/{id_demande}/avis/",
+            {"avis": "FAVORABLE", "observation": "ok"}, format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("aucun service", reponse.data["detail"])
+
+    def test_demande_de_la_rh_va_au_directeur_pas_au_chef(self):
+        self.rh.service = self.service
+        self.rh.save()
+        id_demande = self._demande(self.compte_rh)
+
+        # Le chef du même service ne la voit pas dans sa file et ne peut pas la viser.
+        self.connecter(self.compte_chef)
+        self.assertEqual(self.client.get("/api/demandes/en-attente-service/").data, [])
+        refus = self.client.post(
+            f"/api/demandes/{id_demande}/avis/",
+            {"avis": "FAVORABLE", "observation": "ok"}, format="json",
+        )
+        self.assertEqual(refus.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("responsable RH", refus.data["detail"])
+
+        # Le directeur la voit et la décide directement (RG-10).
+        self.connecter(self.compte_directeur)
+        file_directeur = self.client.get("/api/demandes/en-attente-direction/")
+        self.assertIn(id_demande, [d["id_demande"] for d in file_directeur.data])
+        decision = self.client.post(
+            f"/api/demandes/{id_demande}/avis/",
+            {"avis": "FAVORABLE", "observation": "ok"}, format="json",
+        )
+        self.assertEqual(decision.status_code, status.HTTP_200_OK, decision.data)
+        self.assertEqual(decision.data["statut_demande"], "VALIDE_DIR")
+
+    def test_rh_rattachee_a_un_service_vise_les_demandes_de_son_service(self):
+        self.rh.service = self.service
+        self.rh.save()
+        id_demande = self._demande(self.compte_agent)
+        self.connecter(self.compte_rh)
+        file_rh = self.client.get("/api/a-valider/")
+        self.assertEqual([d["id_demande"] for d in file_rh.data], [id_demande])
+        reponse = self.client.post(
+            f"/api/demandes/{id_demande}/avis/",
+            {"avis": "FAVORABLE", "observation": "ok"}, format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK, reponse.data)
+        self.assertEqual(reponse.data["statut_demande"], "APPROUVE_CS")

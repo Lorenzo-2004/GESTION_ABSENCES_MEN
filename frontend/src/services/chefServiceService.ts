@@ -8,6 +8,8 @@ export interface PersonnelEquipe {
   nom_complet: string
   corps: string
   grade: string
+  sexe?: string
+  statut?: string
   service: number | null
   service_libelle: string | null
 }
