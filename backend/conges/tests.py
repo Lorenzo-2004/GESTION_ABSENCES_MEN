@@ -31,8 +31,13 @@ def mk_personnel(direction, service=None, role=None, statut=Statut.FONCTIONNAIRE
 
 def activer(personnel, annees="2026"):
     d = DecisionConge.objects.create(
-        numero_decision=f"DEC-{personnel.im}-{annees}", personnel=personnel, direction=personnel.direction,
-        annees_titre=annees, date_emission=date(2026, 1, 5),
+        numero_decision=f"DEC-{personnel.im}-{annees}",
+        personnel=personnel,
+        direction=personnel.direction,
+        annees_titre=annees,
+        date_emission=date(2026, 1, 5),
+        budget="Budget de test",
+        imputation_budgetaire="IMPUTATION-TEST",
     )
     d.valider_et_activer_par_rh()
     return d
@@ -56,10 +61,40 @@ class BaseCase(TestCase):
 
 
 class SoldeEtDecisionTests(BaseCase):
+    def test_activation_refuse_si_imputation_budgetaire_absente(self):
+        decision = DecisionConge.objects.create(
+            numero_decision=f"DEC-{self.agent.im}-2026-SANS-IMPUTATION",
+            personnel=self.agent,
+            direction=self.agent.direction,
+            annees_titre="2026",
+            date_emission=date(2026, 1, 5),
+            budget="Budget de test",
+            imputation_budgetaire="",
+        )
+
+        with self.assertRaises(ValidationError) as contexte:
+            decision.valider_et_activer_par_rh()
+
+        self.assertIn("imputation_budgetaire", contexte.exception.error_dict)
+        decision.refresh_from_db()
+        self.assertFalse(decision.est_valide)
+        self.assertFalse(SoldeConge.objects.filter(personnel=self.agent, annee=2026).exists())
+
     def test_activation_cree_solde_30(self):
         activer(self.agent)
         s = self.agent.get_solde_actif(2026)
         self.assertEqual((s.droit_annuel, s.jours_pris, s.solde_restant), (30, 0, 30))
+
+    def test_activation_2022_2023_ouvre_30_jours_de_droit_annuel_par_annee(self):
+        decision = activer(self.agent, annees="2022-2023")
+
+        self.assertEqual(decision.annees(), [2022, 2023])
+        solde_2022 = SoldeConge.objects.get(personnel=self.agent, annee=2022)
+        solde_2023 = SoldeConge.objects.get(personnel=self.agent, annee=2023)
+        self.assertEqual(solde_2022.droit_annuel, 30)
+        self.assertEqual(solde_2023.droit_annuel, 30)
+        # Le reliquat de 2022 peut en plus être reporté en 2023 selon la règle existante.
+        self.assertEqual(solde_2023.report_anterieur, 30)
 
     def test_activation_nouvelle_annee_reporte_reliquat_precedent(self):
         """L'activation d'une nouvelle année reprend le reliquat précédent."""
@@ -212,19 +247,30 @@ class SoumissionTests(BaseCase):
 
         self.assertEqual(d.nombre_jours, 15)
 
-    def test_conge_annuel_ne_force_pas_une_premiere_tranche_de_15_jours(self):
-        """Le cahier des charges ne prescrit pas de première tranche obligatoire de 15 jours."""
+    def test_premiere_tranche_conge_annuel_doit_etre_exactement_15_jours(self):
+        """Première tranche obligatoire de 15 jours calendaires au titre d'un exercice."""
         activer(self.agent)
+
+        with self.assertRaises(ValidationError) as contexte:
+            demande(
+                self.agent,
+                TypeAbsence.CONGE_ANNUEL,
+                date(2026, 3, 2),
+                date(2026, 3, 15),
+                annee_titre=2026,
+            ).soumettre_demande()
+        self.assertIn("première tranche", str(contexte.exception).lower())
 
         premiere = demande(
             self.agent,
             TypeAbsence.CONGE_ANNUEL,
             date(2026, 3, 2),
-            date(2026, 3, 15),
+            date(2026, 3, 16),
             annee_titre=2026,
         ).soumettre_demande()
-        self.assertEqual(premiere.nombre_jours, 14)
+        self.assertEqual(premiere.nombre_jours, 15)
 
+        # Une tranche suivante peut être plus courte, mais reste plafonnée à 15 jours.
         seconde = demande(
             self.agent,
             TypeAbsence.CONGE_ANNUEL,
@@ -233,6 +279,62 @@ class SoumissionTests(BaseCase):
             annee_titre=2026,
         ).soumettre_demande()
         self.assertEqual(seconde.nombre_jours, 10)
+
+        with self.assertRaises(ValidationError) as contexte:
+            demande(
+                self.agent,
+                TypeAbsence.CONGE_ANNUEL,
+                date(2026, 9, 1),
+                date(2026, 9, 16),
+                annee_titre=2026,
+            ).soumettre_demande()
+        self.assertIn("15 jours", str(contexte.exception))
+
+    def test_demande_rejetee_ne_consomme_pas_la_premiere_tranche(self):
+        """Un rejet ne fait pas passer l'agent à la tranche suivante."""
+        activer(self.agent)
+        rejetee = demande(
+            self.agent,
+            TypeAbsence.CONGE_ANNUEL,
+            date(2026, 3, 2),
+            date(2026, 3, 16),
+            annee_titre=2026,
+        )
+        rejetee.statut_demande = StatutDemande.REJETE
+        rejetee.save()
+
+        with self.assertRaises(ValidationError):
+            demande(
+                self.agent,
+                TypeAbsence.CONGE_ANNUEL,
+                date(2026, 6, 1),
+                date(2026, 6, 10),
+                annee_titre=2026,
+            ).soumettre_demande()
+
+    def test_ancienne_premiere_tranche_incoherente_bloque_les_suivantes(self):
+        """Une ancienne tranche de 5 jours ne doit pas devenir un contournement."""
+        activer(self.agent)
+        DemandeAbsence.objects.create(
+            personnel=self.agent,
+            type_absence=TypeAbsence.CONGE_ANNUEL,
+            motif="Ancienne donnée de test",
+            date_debut=date(2026, 3, 2),
+            date_fin=date(2026, 3, 6),
+            annee_titre=2026,
+            nombre_jours=5,
+            lieu_jouissance="Antananarivo",
+            statut_demande=StatutDemande.VALIDE_DIR,
+        )
+        with self.assertRaises(ValidationError) as contexte:
+            demande(
+                self.agent,
+                TypeAbsence.CONGE_ANNUEL,
+                date(2026, 6, 1),
+                date(2026, 6, 10),
+                annee_titre=2026,
+            ).soumettre_demande()
+        self.assertIn("régulariser", str(contexte.exception).lower())
 
     def test_solde_insuffisant_en_comptant_les_demandes_en_attente(self):
         activer(self.agent)
@@ -532,6 +634,27 @@ class CircuitValidationTests(BaseCase):
 class OcrDecisionTests(TestCase):
     """Extraction des données d'une décision (RG-05) : motifs, PDF natif, scan image."""
 
+    def test_quatre_champs_ocr_resistants_aux_variantes_de_mise_en_page(self):
+        from unittest.mock import patch
+        from .services.ocr import extraire_donnees_decision
+
+        texte = """DECISION
+N° de décision
+[[NUMERO_DECISION_OCR]]2205[[/NUMERO_DECISION_OCR]]
+Date émission : 12 mars 2026
+Date de demande de référence
+28/02/2026
+Détails des jours
+Du 02/03/2026 au 31/03/2026 - 30 jours au titre du congé annuel
+"""
+        with patch("conges.services.ocr._lire_texte", return_value=texte):
+            resultat = extraire_donnees_decision(b"contenu-test")
+
+        self.assertEqual(resultat["numero_decision"], "2205")
+        self.assertEqual(resultat["date_emission"], "2026-03-12")
+        self.assertEqual(resultat["date_demande_reference"], "2026-02-28")
+        self.assertEqual(resultat["details_jours"], "30 jours")
+
     def test_annee_unique_et_pluriel(self):
         from .services.ocr import _extraire_annees
 
@@ -552,17 +675,245 @@ class OcrDecisionTests(TestCase):
         self.assertEqual(_extraire_im("Matricule 123.456"), "123456")
         self.assertEqual(_extraire_im("I.M. 654321"), "654321")
 
-    def test_numero_decision_prefere_le_titre_au_decret(self):
+    def test_indice_conserve_le_suffixe_alphabetique(self):
+        from .services.ocr import _extraire_indice
+
+        self.assertEqual(_extraire_indice("Indice : 231 T"), "231 T")
+        self.assertEqual(_extraire_indice("Indice:231T"), "231 T")
+        self.assertEqual(_extraire_indice("Indice : 231 - t"), "231 T")
+        self.assertEqual(_extraire_indice("Indice : 1300\nCorps et Grade : E.L.D 4"), "1300")
+        self.assertIsNone(_extraire_indice("Aucun indice sur ce document"))
+
+    def test_numero_decision_provient_du_cachet_et_non_du_texte_imprime(self):
         from .services.ocr import _extraire_numero_decision
 
-        texte = "Vu le décret n° 2003-1161\nVu l'arrêté n° 45\nDECISION N° 77 MEN/SG"
-        self.assertEqual(_extraire_numero_decision(texte), "77")
-        self.assertEqual(_extraire_numero_decision("2205\nDECISION portant octroi"), "2205")
+        texte = """Vu le décret n° 2003-1161
+Vu l'arrêté n° 45
+DECISION N° 2048 MEN/SG
+[[NUMERO_DECISION_OCR]]2205[[/NUMERO_DECISION_OCR]]"""
+        self.assertEqual(_extraire_numero_decision(texte), "2205")
+        # Sans marqueur du cachet, ne pas inventer le numéro à partir du titre imprimé.
+        self.assertIsNone(_extraire_numero_decision("DECISION N° 2048 MEN/SG"))
+        self.assertIsNone(_extraire_numero_decision("DECISION N° 0077 MEN/SG"))
+        self.assertIsNone(_extraire_numero_decision("2205\nDECISION portant octroi"))
+        self.assertIsNone(_extraire_numero_decision("Numéro de décision : 001/DSI/2026"))
+        self.assertIsNone(_extraire_numero_decision("Numéro : 001/DSI/2026"))
 
     def test_numero_cite_par_un_decret_n_est_pas_retenu(self):
         from .services.ocr import _extraire_numero_decision
 
         self.assertIsNone(_extraire_numero_decision("Vu le décret n° 12 relatif aux congés"))
+
+    def test_numero_decision_avec_espaces_ou_lu_dans_la_case_rouge(self):
+        from .services.ocr import _extraire_numero_decision, _extraire_numero_tamponne
+
+        self.assertIsNone(_extraire_numero_decision("DECISION N° 9 290 MEN/SG/DRH"))
+        self.assertEqual(_extraire_numero_tamponne("9 2 9 0"), "9290")
+        self.assertEqual(
+            _extraire_numero_decision("[[NUMERO_DECISION_OCR]]9290[[/NUMERO_DECISION_OCR]]"),
+            "9290",
+        )
+        self.assertEqual(_extraire_numero_tamponne("2026\n0427"), "0427")
+        self.assertEqual(_extraire_numero_tamponne("2 2 0 5"), "2205")
+        self.assertIsNone(_extraire_numero_tamponne("N° 2026-........-MEN/SG/DSI"))
+        self.assertIsNone(_extraire_numero_tamponne("Vu le décret n° 2003-1161"))
+        # 2048 est ignoré comme millésime parasite ; le bon numéro peut être plus loin.
+        self.assertEqual(_extraire_numero_tamponne("2048\n2205"), "2205")
+        self.assertIsNone(_extraire_numero_tamponne("2048"))
+
+    def test_consensus_ocr_ne_retiens_pas_un_numero_isole_et_favorise_2205(self):
+        from .services.ocr import _choisir_numero_par_consensus
+
+        essais = [["2048"], ["2205"], ["2205"], ["2205"], ["2048"]]
+        self.assertEqual(_choisir_numero_par_consensus(essais), "2205")
+        # En cas d'égalité, mieux vaut demander une vérification manuelle.
+        self.assertIsNone(_choisir_numero_par_consensus([["2205"], ["2205"], ["2204"], ["2204"]]))
+        self.assertIsNone(_choisir_numero_par_consensus([["2048"]]))
+
+    def test_signataire_est_propose_a_partir_du_cachet(self):
+        from .services.ocr import _extraire_signataire
+
+        texte_cachet = """MINISTERE DE L'EDUCATION NATIONALE
+LE DIRECTEUR DES RESSOURCES HUMAINES
+RAKOTOMIARINA Narindra"""
+        signataire = _extraire_signataire(texte_cachet)
+        self.assertIn("DIRECTEUR DES RESSOURCES HUMAINES", signataire.upper())
+        self.assertIn("RAKOTOMIARINA Narindra", signataire)
+
+    def test_signataire_est_vide_si_le_cachet_ne_donne_aucune_fonction(self):
+        from .services.ocr import _extraire_signataire
+
+        self.assertEqual(
+            _extraire_signataire("MINISTERE DE L'EDUCATION NATIONALE\nREPUBLIQUE DE MADAGASCAR"),
+            "",
+        )
+
+    def test_signataire_prefere_le_directeur_rh_a_la_chaine_de_delegation(self):
+        from .services.ocr import _extraire_signataire
+
+        texte_cachet = """P. le Ministre de l'Education Nationale
+P. dél. le Secrétaire Général
+P. dél. le Directeur des Ressources Humaines
+RAKOTOMIARINA Narindra"""
+        signataire = _extraire_signataire(texte_cachet)
+        self.assertIn("DIRECTEUR DES RESSOURCES HUMAINES", signataire.upper())
+        self.assertIn("RAKOTOMIARINA Narindra", signataire)
+
+    def test_signataire_normalise_une_fonction_bruitee_par_le_paraphe(self):
+        from .services.ocr import _extraire_signataire
+
+        signataire = _extraire_signataire(
+            "Of Stet Ypettour des Ressources Humaines\n"
+            "a ice Fe Généra\n"
+            "RAKOTOMIARINA Narindra"
+        )
+        self.assertIn("DIRECTEUR DES RESSOURCES HUMAINES", signataire.upper())
+        self.assertNotIn("Généra", signataire)
+
+    def test_extrait_les_champs_complementaires_lorsquils_sont_libelles(self):
+        from .services.ocr import (
+            _extraire_budget,
+            _extraire_date_demande_reference,
+            _extraire_date_emission,
+            _extraire_details_jours,
+            _extraire_imputation,
+        )
+
+        texte = """DECISION N° 2205 MEN/SG/DRH
+Budget : Budget Spécial
+Imputation budgétaire : 2.1.1.04
+Date d’émission : 12/03/2026
+Date de demande de référence : 28/02/2026
+Détails des jours : 30 jours au titre du congé annuel
+"""
+        self.assertEqual(_extraire_budget(texte), "Budget Spécial")
+        self.assertEqual(_extraire_imputation(texte), "2.1.1.04")
+        self.assertEqual(_extraire_date_emission(texte), "2026-03-12")
+        self.assertEqual(_extraire_date_demande_reference(texte), "2026-02-28")
+        self.assertEqual(_extraire_details_jours(texte), "30 jours")
+
+    def test_details_jours_ne_retourne_que_la_duree_et_jamais_une_periode_datee(self):
+        from .services.ocr import _extraire_details_jours
+
+        texte = """Détails des jours : 30JOURS
+Du : 02/03/2026
+Au : 31/03/2026
+Date de référence : 28/02/2026"""
+        self.assertEqual(_extraire_details_jours(texte), "30 jours")
+        self.assertIsNone(
+            _extraire_details_jours("Détails des jours : du 02/03/2026 au 31/03/2026")
+        )
+        self.assertEqual(_extraire_details_jours("Nombre de jours demandés : 30"), "30 jours")
+
+    def test_ocr_extrait_tous_les_champs_rh_sur_lignes_separees(self):
+        from .services.ocr import (
+            _extraire_agent_concerne,
+            _extraire_budget,
+            _extraire_corps_grade,
+            _extraire_date_demande_reference,
+            _extraire_date_emission,
+            _extraire_details_jours,
+            _extraire_imputation,
+            _extraire_annees,
+            _extraire_indice,
+            _extraire_im,
+            _extraire_numero_decision,
+        )
+
+        texte = """DECISION N° 2048 MEN/SG/DRH
+[[NUMERO_DECISION_OCR]]2205[[/NUMERO_DECISION_OCR]]
+Agent concerné
+RAKOTOVOLOLONA Mialy Nirina Tsizaraina
+IM
+474941
+Date d’émission
+12 mars 2026
+Année(s) au titre du congé
+2024 à 2025
+Budget
+Budget Général
+Imputation budgétaire
+2.1.1.04
+Corps
+Encadreur
+Grade
+Aux Echelle IV 2e échelon
+Indice
+231 T
+Date de demande de référence
+28 février 2026
+Détails des jours
+30 jours au titre du congé annuel"""
+
+        self.assertEqual(_extraire_numero_decision(texte), "2205")
+        self.assertEqual(_extraire_im(texte), "474941")
+        self.assertEqual(_extraire_agent_concerne(texte), "RAKOTOVOLOLONA Mialy Nirina Tsizaraina")
+        self.assertEqual(_extraire_date_emission(texte), "2026-03-12")
+        self.assertEqual(_extraire_annees(texte), [2024, 2025])
+        self.assertEqual(_extraire_budget(texte), "Budget Général")
+        self.assertEqual(_extraire_imputation(texte), "2.1.1.04")
+        self.assertEqual(
+            _extraire_imputation("Imputation budgétaire / Chapitre officiel : TEST-DSI-2026"),
+            "TEST-DSI-2026",
+        )
+        self.assertEqual(_extraire_corps_grade(texte), "Encadreur / Aux Echelle IV 2e échelon")
+        self.assertEqual(_extraire_indice(texte), "231 T")
+        self.assertEqual(_extraire_date_demande_reference(texte), "2026-02-28")
+        self.assertEqual(_extraire_details_jours(texte), "30 jours")
+
+    def test_dates_sur_meme_ligne_ne_se_melangent_pas(self):
+        from .services.ocr import _extraire_date_demande_reference, _extraire_date_emission
+
+        texte = (
+            "Date d’émission : 12/03/2026 "
+            "Date de demande de référence : 28/02/2026"
+        )
+        self.assertEqual(_extraire_date_emission(texte), "2026-03-12")
+        self.assertEqual(_extraire_date_demande_reference(texte), "2026-02-28")
+
+    def test_annees_titre_avec_parentheses_et_plage_donne_chaque_annee(self):
+        from .services.ocr import _extraire_annees
+
+        self.assertEqual(_extraire_annees("Année(s) au titre du congé : 2022-2023"), [2022, 2023])
+        self.assertEqual(_extraire_annees("Année(s) au titre du congé : 2022-2024"), [2022, 2023, 2024])
+
+    def test_dates_ocr_francaises_espaces_et_valeurs_sur_lignes_suivantes(self):
+        from .services.ocr import _extraire_date_demande_reference, _extraire_date_emission
+
+        texte = """Date d’émission
+12 mars
+2026
+Budget
+Budget Général
+Date de demande de référence
+28 02 2026
+"""
+        self.assertEqual(_extraire_date_emission(texte), "2026-03-12")
+        self.assertEqual(_extraire_date_demande_reference(texte), "2026-02-28")
+
+    def test_dates_ne_reprennent_pas_une_date_d_un_autre_champ(self):
+        from .services.ocr import _extraire_date_demande_reference, _extraire_date_emission
+
+        texte = """Date d’émission : 12/03/2026
+Date de demande de référence
+Budget Général
+Date d’émission précédente : 10/01/2020
+"""
+        self.assertEqual(_extraire_date_emission(texte), "2026-03-12")
+        self.assertIsNone(_extraire_date_demande_reference(texte))
+
+    def test_numero_imprime_dans_titre_est_identifie_comme_non_tamponne(self):
+        from .services.ocr import _numeros_titre_imprimes
+
+        self.assertEqual(
+            _numeros_titre_imprimes("DECISION N° 2205 MEN/SG/DRH"),
+            {"2205"},
+        )
+        self.assertEqual(
+            _numeros_titre_imprimes("DECISION N° 2048 MEN/SG/DRH\nCachet : 2205"),
+            {"2048"},
+        )
+        self.assertEqual(_numeros_titre_imprimes("DECISION portant octroi de congé"), set())
 
     def test_pdf_a_texte_natif_lu_sans_ocr(self):
         import io
@@ -576,9 +927,12 @@ class OcrDecisionTests(TestCase):
         y = 800
         for ligne in (
             "DECISION N° 2205 MEN/SG/DRH",
-            "IM : 987 654  Indice 1300",
+            "IM : 987 654  Indice 231 T",
             "un conge de 30 jours au titre des annees 2024 et 2025",
             "Budget General, Imputation 2.1.1, signature de la direction",
+            "Date d’emission : 12/03/2026",
+            "Date de demande de reference : 28/02/2026",
+            "Details des jours : 30 jours au titre du conge annuel",
         ):
             c.drawString(60, y, ligne)
             y -= 30
@@ -587,10 +941,17 @@ class OcrDecisionTests(TestCase):
 
         r = extraire_donnees_decision(flux)
         self.assertEqual(r["source"], "OCR")
-        self.assertEqual((r["im"], r["numero_decision"], r["indice"]), ("987654", "2205", "1300"))
+        # Le texte natif « DECISION N° 2205 » ne prouve pas que 2205 est le cachet.
+        # Sans marqueur du cachet détecté dans l'image, le numéro reste à vérifier manuellement.
+        self.assertEqual((r["im"], r["numero_decision"], r["indice"]), ("987654", None, "231 T"))
         self.assertEqual(r["annees"], [2024, 2025])
         self.assertEqual(r["annees_titre"], "2024, 2025")
-        self.assertEqual(r["champs_manquants"], [])
+        self.assertEqual(r["budget"], "Budget Général")
+        self.assertEqual(r["imputation_budgetaire"], "2.1.1")
+        self.assertEqual(r["date_emission"], "2026-03-12")
+        self.assertEqual(r["date_demande_reference"], "2026-02-28")
+        self.assertTrue(r["details_jours"].startswith("30 jours"))
+        self.assertIn("numéro de décision", r["champs_manquants"])
 
     def test_fichier_illisible_retombe_en_saisie_manuelle_avec_explication(self):
         import io

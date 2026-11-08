@@ -14,6 +14,7 @@ from django.core.files.base import ContentFile
 from PIL import Image, UnidentifiedImageError
 from rest_framework import serializers
 
+from personnels.enums import Role
 from personnels.models import Personnel
 from personnels.serializers import PersonnelSerializer
 from .enums import TypeAbsence
@@ -36,9 +37,10 @@ class DemandeAbsenceSerializer(serializers.ModelSerializer):
     )
 
     # Le canvas transmet une image PNG encodée en data URL. Le champ est write-only :
-    # on ne renvoie jamais le chemin privé du fichier au navigateur.
+    # on ne renvoie jamais le chemin privé du fichier au navigateur. L'obligation
+    # conditionnelle est vérifiée dans DemandeAbsenceSoumissionSerializer.validate().
     signature_agent = serializers.CharField(
-        required=True, write_only=True, allow_blank=False, trim_whitespace=False,
+        required=False, write_only=True, allow_blank=True, trim_whitespace=False,
         max_length=3_000_000,
     )
     date_signature_agent = serializers.DateTimeField(read_only=True)
@@ -201,6 +203,39 @@ class DemandeAbsenceSoumissionSerializer(DemandeAbsenceSerializer):
 
     class Meta(DemandeAbsenceSerializer.Meta):
         fields = DemandeAbsenceSerializer.Meta.fields
+
+    def validate(self, attrs):
+        """La signature est facultative uniquement pour une saisie déléguée par le chef.
+
+        Un agent qui soumet sa propre demande garde l'obligation de signer. Le
+        champ `personnel` doit désigner un autre agent ; la vue revalide ensuite
+        qu'il appartient bien au même service avant tout enregistrement.
+        """
+        attrs = super().validate(attrs)
+        request = self.context.get("request")
+        utilisateur = getattr(request, "user", None)
+        demandeur = getattr(utilisateur, "personnel", None)
+        cible = attrs.get("personnel")
+        delegation_chef = bool(
+            utilisateur
+            and getattr(utilisateur, "role", None) == Role.CHEF_SERVICE
+            and demandeur is not None
+            and cible is not None
+            and cible.pk != demandeur.pk
+        )
+
+        signature = attrs.get("signature_agent")
+        if not signature:
+            if not delegation_chef:
+                raise serializers.ValidationError({
+                    "signature_agent": (
+                        "La signature est obligatoire pour une demande personnelle. "
+                        "Elle n'est pas exigée lorsque le chef de service saisit une demande pour un agent de son service."
+                    )
+                })
+            # Ne jamais enregistrer une chaîne vide comme si c'était un fichier.
+            attrs.pop("signature_agent", None)
+        return attrs
 
 
 class AvisSerializer(serializers.Serializer):

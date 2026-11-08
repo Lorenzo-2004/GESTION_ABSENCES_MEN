@@ -220,10 +220,9 @@ def _corps_champs(c, demande, decision=None, solde=None):
     """Écrit les données de l'agent et de la demande sur le formulaire."""
     personnel = demande.personnel
 
-    # « N° 2026-.....-MEN/SG/DSI » : seul le numéro d'ordre s'écrit dans les pointillés
-    # (« DA-2026-00007 » → « 00007 »). Le millésime est déjà imprimé sur le formulaire.
-    if demande.numero_enregistrement:
-        _ecrire(c, demande.numero_enregistrement.rsplit("-", 1)[-1], "numero")
+    # La zone « N° 2026-.....-MEN/SG/DSI » doit rester vide sur le formulaire officiel.
+    # Le numéro interne de la demande reste conservé en base et dans l'API ; il n'est
+    # simplement pas imprimé dans cette zone du document.
     _ecrire(c, _date_de_la_demande(demande).strftime("%d/%m/%Y"), "date_demande")
 
     _ecrire(c, personnel.nom_complet, "nom")

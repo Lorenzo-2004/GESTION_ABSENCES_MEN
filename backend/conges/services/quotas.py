@@ -12,6 +12,8 @@ from ..regles import (
     STATUTS_ACTIFS,
     STATUTS_EN_COURS,
     STATUTS_OCCUPANTS,
+    DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL,
+    DUREE_MAX_TRANCHE_CONGE_ANNUEL,
     iter_jours,
     plafond_annuel,
     plafond_mensuel,
@@ -152,11 +154,103 @@ def verifier_solde_conge_annuel(demande, nombre_jours):
     return solde
 
 
-def verifier_tranches_conge_annuel(demande, nombre_jours):
-    """Compatibilité avec d'anciens appels : le CDC ne fixe aucune tranche minimale.
+def etat_tranches_conge_annuel(personnel, annee, exclure_demande_id=None):
+    """Retourne la règle applicable et signale les anciennes tranches incohérentes.
 
-    La règle historique imposant une première tranche de 15 jours ne fait pas partie
-    des règles RG-01 à RG-18. La fonction est volontairement sans effet et pourra être
-    supprimée une fois tous les anciens déploiements mis à jour.
+    Les demandes antérieures actives au titre de l'année sont examinées par ordre
+    de création. Une première tranche historique de moins/plus de 15 jours, ou une
+    tranche ultérieure hors de l'intervalle 1..15, ne doit pas devenir un moyen de
+    contourner la règle : l'enregistrement doit alors être régularisé par la RH.
     """
-    return None
+    demandes = DemandeAbsence.objects.filter(
+        personnel_id=personnel.pk,
+        type_absence=TypeAbsence.CONGE_ANNUEL,
+        statut_demande__in=STATUTS_ACTIFS,
+    ).filter(
+        Q(annee_titre=annee)
+        | Q(annee_titre__isnull=True, date_debut__year=annee)
+    )
+    if exclure_demande_id is not None:
+        demandes = demandes.exclude(pk=exclure_demande_id)
+    existantes = list(demandes.order_by("date_creation", "pk"))
+
+    if not existantes:
+        return {
+            "premiere_tranche": True,
+            "historique_incoherent": False,
+            "message_historique": "",
+            "nombre_tranches_existantes": 0,
+        }
+
+    anomalies = []
+    premiere = existantes[0]
+    duree_premiere = premiere.nombre_jours
+    if duree_premiere != DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL:
+        anomalies.append(
+            f"la première tranche enregistrée ({premiere.numero_enregistrement or premiere.pk}) "
+            f"dure {duree_premiere} jours au lieu de {DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL}"
+        )
+
+    for tranche in existantes[1:]:
+        if not 1 <= tranche.nombre_jours <= DUREE_MAX_TRANCHE_CONGE_ANNUEL:
+            anomalies.append(
+                f"la tranche {tranche.numero_enregistrement or tranche.pk} "
+                f"dure {tranche.nombre_jours} jours, hors de la limite 1..{DUREE_MAX_TRANCHE_CONGE_ANNUEL}"
+            )
+
+    message = ""
+    if anomalies:
+        message = (
+            "Une ou plusieurs demandes de congé annuel déjà enregistrées pour cette année "
+            "ne respectent pas la règle des tranches (" + "; ".join(anomalies) + "). "
+            "La RH doit régulariser l'historique avant toute nouvelle demande pour cette année."
+        )
+
+    return {
+        "premiere_tranche": False,
+        "historique_incoherent": bool(anomalies),
+        "message_historique": message,
+        "nombre_tranches_existantes": len(existantes),
+    }
+
+
+def premiere_tranche_conge_annuel_requise(personnel, annee, exclure_demande_id=None):
+    """Retourne vrai quand aucune tranche active n'existe pour l'année de titre."""
+    return etat_tranches_conge_annuel(
+        personnel, annee, exclure_demande_id=exclure_demande_id
+    )["premiere_tranche"]
+
+
+def verifier_tranches_conge_annuel(demande, nombre_jours):
+    """Première tranche exactement 15 jours ; tranches ultérieures de 15 jours max.
+
+    Cette règle est appliquée côté serveur lors de chaque soumission, y compris
+    lorsque l'API est appelée sans passer par le formulaire React.
+    """
+    if demande.type_absence != TypeAbsence.CONGE_ANNUEL:
+        return
+
+    if nombre_jours > DUREE_MAX_TRANCHE_CONGE_ANNUEL:
+        raise ValidationError({
+            "date_fin": (
+                "Chaque tranche de congé annuel est limitée à "
+                f"{DUREE_MAX_TRANCHE_CONGE_ANNUEL} jours calendaires."
+            )
+        })
+
+    etat = etat_tranches_conge_annuel(
+        demande.personnel,
+        demande.annee,
+        exclure_demande_id=demande.pk,
+    )
+    if etat["historique_incoherent"]:
+        raise ValidationError({"annee_titre": etat["message_historique"]})
+    if etat["premiere_tranche"] and nombre_jours != DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL:
+        raise ValidationError({
+            "date_fin": (
+                "La première tranche du congé annuel doit être exactement de "
+                f"{DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL} jours calendaires. "
+                "Les tranches suivantes peuvent durer de 1 à "
+                f"{DUREE_MAX_TRANCHE_CONGE_ANNUEL} jours, selon le solde disponible."
+            )
+        })

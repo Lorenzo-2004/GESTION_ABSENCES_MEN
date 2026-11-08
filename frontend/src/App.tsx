@@ -239,6 +239,15 @@ function App() {
         }
       />
 
+      <Route
+        path="/app/rh/nouvelle-demande"
+        element={
+          <ProtectedRoute>
+            <NouvelleDemandePage />
+          </ProtectedRoute>
+        }
+      />
+
       {/* Espace administrateur */}
       <Route
         path="/app/admin/comptes"

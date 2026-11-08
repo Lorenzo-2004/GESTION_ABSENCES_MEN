@@ -97,3 +97,34 @@ export async function creerDemandeConge(
 
   return data
 }
+
+
+export interface RegleTrancheAnnuelle {
+  annee_titre: number
+  personnel_id: number
+  premiere_tranche: boolean
+  jours_obligatoires: number | null
+  jours_minimum: number
+  jours_maximum: number
+  historique_incoherent: boolean
+  message_historique: string
+  nombre_tranches_existantes: number
+  message: string
+}
+
+/** Retourne la règle de tranche de l'agent pour l'année de titre choisie. */
+export async function recupererRegleTrancheAnnuelle(
+  anneeTitre: number,
+  personnelId?: number,
+): Promise<RegleTrancheAnnuelle> {
+  const { data } = await api.get<RegleTrancheAnnuelle>(
+    '/demandes/regle-tranche-annuelle/',
+    {
+      params: {
+        annee_titre: anneeTitre,
+        ...(personnelId !== undefined ? { personnel: personnelId } : {}),
+      },
+    },
+  )
+  return data
+}

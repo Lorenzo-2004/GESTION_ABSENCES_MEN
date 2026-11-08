@@ -12,7 +12,7 @@ export interface PersonnelDecision {
   statut?: string
   corps?: string
   grade?: string
-  indice?: number | null
+  indice?: string | null
   direction: number
   direction_libelle?: string
   service?: number | null
@@ -29,7 +29,7 @@ export interface DecisionConge {
   budget: string
   imputation_budgetaire: string
   corps_grade: string
-  indice: number | null
+  indice: string | null
   annees_titre: string
   details_jours: string
   date_demande_reference: string | null
@@ -47,10 +47,23 @@ export interface DonneesExtraitesDecision {
   numero_decision: string | null
   indice: string | number | null
   annees: number[]
-  /** Formatted value that can be placed directly in the RH form. */
+  /** Valeur formatée directement utilisable dans le formulaire RH. */
   annees_titre?: string
-  /** Champs que l'OCR n'a pas reconnus et que la RH doit vérifier/saisir. */
+  /** Agent explicitement nommé dans le document ; sert de repli si l'IM est absent. */
+  agent_concerne?: string | null
+  /** Champs complémentaires reconnus dans le document, lorsqu'ils sont lisibles. */
+  budget?: string | null
+  corps_grade?: string | null
+  imputation_budgetaire?: string | null
+  date_emission?: string | null
+  date_demande_reference?: string | null
+  details_jours?: string | null
+  signataire?: string | null
+  texte_cachet?: string
+  /** Champs d'identification non reconnus : la RH doit les vérifier/saisir. */
   champs_manquants?: string[]
+  /** Autres champs non reconnus par l'OCR. */
+  champs_complementaires_manquants?: string[]
   /** Limitations ou problèmes détectés pendant la lecture du scan. */
   avertissements?: string[]
   texte_brut: string
@@ -72,7 +85,7 @@ export interface CreationDecision {
   budget?: string
   imputation_budgetaire?: string
   corps_grade?: string
-  indice?: number | null
+  indice?: string | null
   annees_titre: string
   details_jours?: string
   date_demande_reference?: string | null

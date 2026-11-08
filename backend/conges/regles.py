@@ -9,6 +9,8 @@ from datetime import date, timedelta
 from .enums import StatutDemande, TypeAbsence
 
 DROIT_ANNUEL_DEFAUT = 30  # jours calendaires / an pour Fonctionnaires et ECD
+DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL = 15  # jours calendaires obligatoires
+DUREE_MAX_TRANCHE_CONGE_ANNUEL = 15  # jours calendaires maximum par tranche
 
 # RG-01 : type -> (plafond mensuel, plafond annuel) en jours
 PLAFONDS = {

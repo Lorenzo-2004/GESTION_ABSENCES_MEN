@@ -324,7 +324,7 @@ class DecisionConge(models.Model):
     budget = models.CharField(max_length=100, default="Budget Général")
     imputation_budgetaire = models.CharField(max_length=100, blank=True)
     corps_grade = models.CharField(max_length=200, blank=True)
-    indice = models.PositiveIntegerField(null=True, blank=True)
+    indice = models.CharField(max_length=30, null=True, blank=True)
     annees_titre = models.CharField(max_length=50, help_text="Ex. : 2026 ou 2025-2026")
     details_jours = models.TextField(blank=True)
     date_demande_reference = models.DateField(null=True, blank=True)
@@ -356,6 +356,30 @@ class DecisionConge(models.Model):
             raise ValidationError(
                 "Les stagiaires n'ont pas droit au congé annuel : aucune décision ne peut être enregistrée."
             )
+
+        # Une décision activée ouvre les droits et doit permettre de générer la
+        # fiche officielle. Refuser ici les champs budgétaires vides évite qu'une
+        # décision soit activée, puis provoque un HTTP 400 au téléchargement PDF.
+        if self.est_valide:
+            champs_obligatoires = {
+                "numero_decision": self.numero_decision,
+                "budget": self.budget,
+                "imputation_budgetaire": self.imputation_budgetaire,
+            }
+            erreurs = {}
+            libelles = {
+                "numero_decision": "Le numéro de décision est obligatoire avant activation.",
+                "budget": "Le budget est obligatoire avant activation.",
+                "imputation_budgetaire": (
+                    "L’imputation budgétaire/chapitre est obligatoire avant activation : "
+                    "la fiche officielle ne peut pas être générée sans cette valeur."
+                ),
+            }
+            for champ, valeur in champs_obligatoires.items():
+                if not str(valeur or "").strip():
+                    erreurs[champ] = libelles[champ]
+            if erreurs:
+                raise ValidationError(erreurs)
 
     def save(self, *args, **kwargs):
         self.clean()
@@ -433,6 +457,7 @@ class TraceSignature(models.Model):
     class Evenement(models.TextChoices):
         SIGNATURE_AGENT_ENREGISTREE = "SIGNATURE_AGENT_ENREGISTREE", "Signature du demandeur enregistrée"
         SIGNATURE_AGENT_RECONCILIEE = "SIGNATURE_AGENT_RECONCILIEE", "Journal de signature initialisé pour une demande préexistante"
+        DEMANDE_SAISIE_DELEGUEE = "DEMANDE_SAISIE_DELEGUEE", "Demande saisie par le chef pour un agent"
         PDF_OFFICIEL_SCELE = "PDF_OFFICIEL_SCELE", "Document officiel scellé"
         PDF_OFFICIEL_TELECHARGE = "PDF_OFFICIEL_TELECHARGE", "Document officiel téléchargé"
 

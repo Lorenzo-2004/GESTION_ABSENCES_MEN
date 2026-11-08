@@ -9,7 +9,7 @@ le solde.
 from rest_framework import status
 
 from conges.models import DemandeAbsence
-from conges.tests_api import BaseAPICase
+from conges.tests_api import BaseAPICase, SIGNATURE_TEST_DATA_URI
 
 
 class VerrouillageDemandesTests(BaseAPICase):
@@ -17,7 +17,14 @@ class VerrouillageDemandesTests(BaseAPICase):
         self.connecter(self.compte_agent)
         reponse = self.client.post(
             "/api/demandes/",
-            {"motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "PERMISSION", "date_debut": "2026-03-02", "date_fin": "2026-03-03"},
+            {
+                "signature_agent": SIGNATURE_TEST_DATA_URI,
+                "motif": "Motif de test",
+                "lieu_jouissance": "Antananarivo",
+                "type_absence": "PERMISSION",
+                "date_debut": "2026-03-02",
+                "date_fin": "2026-03-03",
+            },
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)

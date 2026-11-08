@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   CSSProperties,
   DragEvent,
@@ -8,6 +8,13 @@ import type {
 } from 'react'
 import { Link, Navigate } from 'react-router'
 import { useAuth } from '../../contexts/useAuth'
+import {
+  listerDemandesValideesParService,
+  recupererFormulaireOfficiel,
+  verifierIntegriteFormulaire,
+  type DemandeConge,
+  typePossedeFicheOfficielle,
+} from '../../services/congesService'
 import {
   activerDecision,
   creerDecision,
@@ -36,7 +43,7 @@ import {
 } from '../../components/men/miseEnPageRH.tsx'
 import { messageErreurUtilisateur } from '../../lib/messages'
 import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
-import { anneesTitreValides, entierValide, nomValide, normaliserAnneesTitre, normaliserEntier, normaliserNom, normaliserNumeroDecision, normaliserTexteLibre, MESSAGE_NOM } from '../../lib/validationChamps'
+import { anneesTitreValides, nomValide, normaliserAnneesTitre, normaliserNom, normaliserNumeroDecision, normaliserTexteLibre, MESSAGE_NOM } from '../../lib/validationChamps'
 
 type FiltreDecision = 'toutes' | 'valides' | 'non_validees'
 type ModeSaisie = 'scan' | 'manuel'
@@ -128,7 +135,9 @@ const zoneTexte =
 const TITRES_VUES: Record<VueRH, { titre: string; description: string }> = {
   apercu: { titre: 'Vue d’ensemble', description: 'Suivi des décisions et des droits à congé' },
   decisions: { titre: 'Décisions', description: 'Consulter, rechercher et activer les soldes' },
+  formulaires: { titre: 'Formulaires officiels', description: 'Demandes visées par service — PDF à imprimer pour les signatures manuscrites' },
   reports: { titre: 'Report des reliquats', description: 'Reporter les soldes d’une année vers la suivante' },
+  'demande-agent': { titre: 'Demande pour un agent', description: 'Préparer une demande pour un agent du ministère' },
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,6 +150,18 @@ function dateDuJour(): string {
   const mois = String(maintenant.getMonth() + 1).padStart(2, '0')
   const jour = String(maintenant.getDate()).padStart(2, '0')
   return `${annee}-${mois}-${jour}`
+}
+
+function normaliserIndice(valeur: string): string {
+  return valeur
+    .replace(/[^\dA-Za-z\s-]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .toUpperCase()
+    .slice(0, 30)
+}
+
+function indiceValide(valeur: string): boolean {
+  return /^\d{1,6}(?:\s*-?\s*[A-Z])?$/.test(valeur.trim())
 }
 
 function formulaireInitial(): FormulaireDecision {
@@ -161,6 +182,99 @@ function formulaireInitial(): FormulaireDecision {
   }
 }
 
+/** En mode scan, aucun défaut ne doit être confondu avec une donnée OCR. */
+function formulaireScanInitial(): FormulaireDecision {
+  return {
+    numero_decision: '',
+    personnel: '',
+    direction: '',
+    budget: '',
+    imputation_budgetaire: '',
+    corps_grade: '',
+    indice: '',
+    annees_titre: '',
+    details_jours: '',
+    date_demande_reference: '',
+    date_emission: '',
+    signataire: '',
+    nature: 'SAISIE_MANUELLE',
+  }
+}
+
+/** Récupère les années de titre explicitement fournies par l'OCR ou le champ annuel. */
+function anneesDepuisExtraction(annees?: number[] | null, anneesTitre?: string | null): number[] {
+  const depuisOcr = (annees ?? []).filter((annee) => Number.isInteger(annee) && annee >= 1900 && annee <= 9999)
+  const depuisTexte = (anneesTitre ?? '').match(/(?:19|20)\d{2}/g)?.map(Number) ?? []
+  const valeurs = depuisOcr.length ? depuisOcr : depuisTexte
+  const uniques = [...new Set(valeurs)].sort((a, b) => a - b)
+  // Une plage comme 2022-2024 signifie 30 jours pour chacune des années incluses.
+  if (uniques.length === 2 && uniques[1] - uniques[0] > 1 && uniques[1] - uniques[0] <= 10 && /[-–à]/.test(anneesTitre ?? '')) {
+    return Array.from({ length: uniques[1] - uniques[0] + 1 }, (_, index) => uniques[0] + index)
+  }
+  return uniques
+}
+
+/** Garde une durée pure, puis précise chaque année de titre lorsque plusieurs années sont concernées. */
+function normaliserDetailsJours(
+  valeur: string | null | undefined,
+  annees?: number[] | null,
+  anneesTitre?: string | null,
+): string {
+  const texte = normaliserTexteLibre(valeur ?? '', true).replace(/\s+/g, ' ').trim()
+  if (!texte) return ''
+  const trouve = texte.match(/(?:^|\D)(\d{1,3})\s*(?:jours?|jrs?|j)\b/i)
+  if (!trouve) return ''
+  const nombre = Number(trouve[1])
+  if (!Number.isInteger(nombre) || nombre < 1 || nombre > 365) return ''
+  const duree = `${nombre} ${nombre === 1 ? 'jour' : 'jours'}`
+  const anneesConcernees = anneesDepuisExtraction(annees, anneesTitre)
+  if (anneesConcernees.length <= 1) return duree
+  return anneesConcernees.map((annee) => `${annee} : ${duree}`).join('\n')
+}
+
+/** Le champ numéro extrait doit rester limité aux quatre chiffres du tampon. */
+function numeroTamponneDepuisOCR(valeur: string | null | undefined): string {
+  const texte = normaliserNumeroDecision(valeur ?? '').trim()
+  const chiffres = texte.replace(/\s+/g, '')
+  return /^\d{4}$/.test(chiffres) ? chiffres : ''
+}
+
+/** Les champs HTML date attendent YYYY-MM-DD ; accepte aussi les formats OCR fréquents. */
+function dateISOExtraite(valeur: string | null | undefined): string {
+  const texte = (valeur ?? '').trim()
+  if (!texte) return ''
+
+  const moisFr: Record<string, number> = {
+    janvier: 1, janv: 1, février: 2, fevrier: 2, févr: 2, fevr: 2,
+    mars: 3, avril: 4, avr: 4, mai: 5, juin: 6, juillet: 7, juil: 7,
+    août: 8, aout: 8, septembre: 9, sept: 9, octobre: 10, oct: 10,
+    novembre: 11, nov: 11, décembre: 12, decembre: 12, déc: 12, dec: 12,
+  }
+  let annee = 0
+  let mois = 0
+  let jour = 0
+  let m = texte.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/)
+  if (m) {
+    annee = Number(m[1]); mois = Number(m[2]); jour = Number(m[3])
+  } else {
+    m = texte.match(/^(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{2,4})$/)
+    if (m) {
+      jour = Number(m[1]); mois = Number(m[2]); annee = Number(m[3])
+      if (annee < 100) annee += annee <= 69 ? 2000 : 1900
+    } else {
+      m = texte.match(/^(\d{1,2})(?:er)?\s+([\p{L}.]+)\s+(\d{4})$/iu)
+      if (!m) return ''
+      jour = Number(m[1]); annee = Number(m[3])
+      const libelleMois = m[2].toLocaleLowerCase('fr-FR').replace(/\.$/, '')
+      mois = moisFr[libelleMois] ?? moisFr[libelleMois.slice(0, 4)] ?? 0
+    }
+  }
+  if (!annee || mois < 1 || mois > 12 || jour < 1 || jour > 31) return ''
+  const date = new Date(Date.UTC(annee, mois - 1, jour))
+  if (date.getUTCFullYear() !== annee || date.getUTCMonth() + 1 !== mois || date.getUTCDate() !== jour) return ''
+  return `${annee}-${String(mois).padStart(2, '0')}-${String(jour).padStart(2, '0')}`
+}
+
 function messageErreur(erreur: unknown): string {
   return messageErreurUtilisateur(erreur, 'L’opération n’a pas pu être effectuée. Vérifiez les informations puis réessayez.')
 }
@@ -171,6 +285,62 @@ function nomPersonnel(personnel?: PersonnelDecision): string {
     personnel.nom_complet ||
     [personnel.nom, personnel.prenoms].filter(Boolean).join(' ') ||
     `IM ${personnel.im}`
+  )
+}
+
+function dateCourteDemande(valeur?: string | null): string {
+  if (!valeur) return '—'
+  const date = new Date(`${valeur.slice(0, 10)}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('fr-FR', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(date)
+}
+
+function nomAgentDemande(demande: DemandeConge): string {
+  const personnel = demande.personnel_detail
+  return personnel?.nom_complet
+    || [personnel?.nom, personnel?.prenoms].filter(Boolean).join(' ')
+    || `Agent #${demande.personnel}`
+}
+
+function cleServiceDemande(demande: DemandeConge): string {
+  const personnel = demande.personnel_detail
+  const direction = personnel?.direction ?? 'sans-direction'
+  return personnel?.service != null
+    ? `direction-${direction}-service-${personnel.service}`
+    : `direction-${direction}-sans-service`
+}
+
+interface GroupeDemandesService {
+  cle: string
+  service: string
+  direction: string
+  demandes: DemandeConge[]
+}
+
+function regrouperDemandesParService(demandes: DemandeConge[]): GroupeDemandesService[] {
+  const groupes = new Map<string, GroupeDemandesService>()
+
+  for (const demande of demandes) {
+    const cle = cleServiceDemande(demande)
+    const personnel = demande.personnel_detail
+    const service = personnel?.service_libelle?.trim() || 'Service non renseigné'
+    const direction = personnel?.direction_libelle?.trim() || 'Direction non renseignée'
+    const groupe = groupes.get(cle) ?? {
+      cle,
+      service,
+      direction,
+      demandes: [],
+    }
+    groupe.demandes.push(demande)
+    groupes.set(cle, groupe)
+  }
+
+  return [...groupes.values()].sort((a, b) =>
+    `${a.direction} ${a.service}`.localeCompare(`${b.direction} ${b.service}`, 'fr'),
   )
 }
 
@@ -425,6 +595,7 @@ export function DecisionsRHPage() {
 
   const [decisions, setDecisions] = useState<DecisionConge[]>([])
   const [toutesDecisions, setToutesDecisions] = useState<DecisionConge[]>([])
+  const [demandesValideesService, setDemandesValideesService] = useState<DemandeConge[]>([])
   const [personnels, setPersonnels] = useState<PersonnelDecision[]>([])
   const [formulaire, setFormulaire] = useState<FormulaireDecision>(formulaireInitial)
 
@@ -437,15 +608,19 @@ export function DecisionsRHPage() {
 
   const [chargementListe, setChargementListe] = useState(true)
   const [chargementStats, setChargementStats] = useState(true)
+  const [chargementFormulaires, setChargementFormulaires] = useState(false)
   const [chargementScan, setChargementScan] = useState(false)
   const [enregistrement, setEnregistrement] = useState(false)
   const [actionEnCours, setActionEnCours] = useState<number | null>(null)
+  const [formulaireEnTelechargement, setFormulaireEnTelechargement] = useState<number | null>(null)
   const [reportEnCours, setReportEnCours] = useState(false)
 
   const [anneeSource, setAnneeSource] = useState(String(new Date().getFullYear() - 1))
   const [erreur, setErreur] = useState('')
   const [succes, setSucces] = useState('')
   const [confirmation, setConfirmation] = useState<ConfirmationRH | null>(null)
+  const [rechercheFormulaires, setRechercheFormulaires] = useState('')
+  const [serviceFiltreFormulaires, setServiceFiltreFormulaires] = useState('')
 
   const total = toutesDecisions.length
   const nombreValides = toutesDecisions.filter((d) => d.est_valide).length
@@ -461,6 +636,40 @@ export function DecisionsRHPage() {
   const affValides = useCompteur(valeurStat(nombreValides))
   const affAVerifier = useCompteur(valeurStat(nombreAVerifier))
   const affPourcentage = useCompteur(valeurStat(pourcentage))
+
+  const groupesTousServices = useMemo(
+    () => regrouperDemandesParService(demandesValideesService),
+    [demandesValideesService],
+  )
+  const demandesFormulairesFiltrees = useMemo(() => {
+    const recherche = rechercheFormulaires.trim().toLocaleLowerCase('fr-FR')
+    return demandesValideesService.filter((demande) => {
+      if (serviceFiltreFormulaires && cleServiceDemande(demande) !== serviceFiltreFormulaires) {
+        return false
+      }
+      if (!recherche) return true
+      const personnel = demande.personnel_detail
+      const texte = [
+        demande.numero_enregistrement,
+        demande.type_absence_libelle,
+        demande.motif,
+        personnel?.im,
+        personnel?.nom,
+        personnel?.prenoms,
+        personnel?.nom_complet,
+        personnel?.service_libelle,
+        personnel?.direction_libelle,
+      ].filter(Boolean).join(' ').toLocaleLowerCase('fr-FR')
+      return texte.includes(recherche)
+    })
+  }, [demandesValideesService, rechercheFormulaires, serviceFiltreFormulaires])
+  const groupesFormulairesFiltres = useMemo(
+    () => regrouperDemandesParService(demandesFormulairesFiltrees),
+    [demandesFormulairesFiltrees],
+  )
+  const nombrePDFDisponibles = demandesValideesService.filter(
+    (demande) => typePossedeFicheOfficielle(demande.type_absence),
+  ).length
 
   async function chargerDecisions(recherche = rechercheDecision, statut = filtre) {
     setChargementListe(true)
@@ -487,7 +696,11 @@ export function DecisionsRHPage() {
   }
 
   async function actualiser() {
-    await Promise.all([chargerDecisions(), chargerStatistiques()])
+    await Promise.all([
+      chargerDecisions(),
+      chargerStatistiques(),
+      ...(vue === 'formulaires' ? [chargerFormulairesParService()] : []),
+    ])
   }
 
   async function chargerPersonnels(recherche = recherchePersonnel) {
@@ -499,12 +712,80 @@ export function DecisionsRHPage() {
     }
   }
 
+  async function chargerFormulairesParService() {
+    setChargementFormulaires(true)
+    try {
+      const resultat = await listerDemandesValideesParService()
+      setDemandesValideesService(resultat)
+      setErreur('')
+    } catch (e) {
+      setErreur(`Impossible de charger les demandes visées par service. ${messageErreur(e)}`)
+    } finally {
+      setChargementFormulaires(false)
+    }
+  }
+
+  async function telechargerFormulaireOfficiel(demande: DemandeConge) {
+    if (demande.statut_demande !== 'APPROUVE_CS') {
+      setErreur('Le formulaire est disponible dans cette rubrique uniquement après le visa du chef de service.')
+      return
+    }
+    if (!typePossedeFicheOfficielle(demande.type_absence)) {
+      setErreur('Aucune fiche PDF officielle n’est prévue pour ce type de demande.')
+      return
+    }
+
+    setFormulaireEnTelechargement(demande.id_demande)
+    setErreur('')
+    setSucces('')
+    try {
+      const fichier = await recupererFormulaireOfficiel(demande.id_demande)
+      const debutFichier = await fichier.slice(0, 5).text()
+      if (debutFichier !== '%PDF-') {
+        throw new Error('Le serveur n’a pas renvoyé un PDF officiel valide.')
+      }
+
+      const integrite = await verifierIntegriteFormulaire(demande.id_demande)
+      if (
+        integrite.integrite_globale !== true
+        || integrite.document_integrite !== true
+        || integrite.journal_integrite !== true
+        || integrite.signature_integrite === false
+      ) {
+        throw new Error('Le contrôle d’intégrité du formulaire a échoué. Ne transmettez pas ce document pour signature.')
+      }
+
+      const url = URL.createObjectURL(new Blob([fichier], { type: 'application/pdf' }))
+      const lien = document.createElement('a')
+      const reference = (demande.numero_enregistrement || `demande-${demande.id_demande}`)
+        .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      lien.href = url
+      lien.download = `Formulaire-officiel-${reference}.pdf`
+      document.body.appendChild(lien)
+      lien.click()
+      lien.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+      setSucces(`Formulaire officiel de ${nomAgentDemande(demande)} téléchargé après vérification de son intégrité.`)
+    } catch (e) {
+      setErreur(`Téléchargement du formulaire impossible. ${messageErreur(e)}`)
+    } finally {
+      setFormulaireEnTelechargement(null)
+    }
+  }
+
   useEffect(() => {
     void chargerDecisions('', 'toutes')
     void chargerStatistiques()
     void chargerPersonnels('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (vue === 'formulaires' && demandesValideesService.length === 0) {
+      void chargerFormulairesParService()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vue])
 
   if (chargement) {
     return (
@@ -526,7 +807,7 @@ export function DecisionsRHPage() {
         valeurSecurisee = normaliserAnneesTitre(valeur)
         break
       case 'indice':
-        valeurSecurisee = normaliserEntier(valeur, 8)
+        valeurSecurisee = normaliserIndice(valeur)
         break
       case 'signataire':
         valeurSecurisee = normaliserNom(valeur)
@@ -550,7 +831,7 @@ export function DecisionsRHPage() {
     setFormulaire((precedent) => ({
       ...precedent,
       personnel: id,
-      direction: agent ? String(agent.direction) : precedent.direction,
+      direction: agent ? String(agent.direction) : '',
       corps_grade: agent ? [agent.corps, agent.grade].filter(Boolean).join(' ') : precedent.corps_grade,
     }))
   }
@@ -571,7 +852,14 @@ export function DecisionsRHPage() {
 
   function changerMode(mode: ModeSaisie) {
     setModeSaisie(mode)
-    if (mode === 'manuel' && !resultatScan) modifierChamp('nature', 'SAISIE_MANUELLE')
+    if (mode === 'scan') {
+      setFormulaire(formulaireScanInitial())
+      setFichierScan(null)
+      setResultatScan(null)
+      viderChampFichier()
+    } else if (!resultatScan) {
+      modifierChamp('nature', 'SAISIE_MANUELLE')
+    }
   }
 
   function ouvrirTiroir(mode: ModeSaisie) {
@@ -597,6 +885,7 @@ export function DecisionsRHPage() {
     setSucces('')
     if (!fichier) {
       setFichierScan(null)
+      setFormulaire(formulaireScanInitial())
       return
     }
 
@@ -614,6 +903,9 @@ export function DecisionsRHPage() {
       return
     }
 
+    // Réinitialiser les résultats précédents avant d'analyser un nouveau document.
+    // Les champs non reconnus resteront vides pour être saisis manuellement, jamais devinés.
+    setFormulaire(formulaireScanInitial())
     setFichierScan(fichier)
     setChargementScan(true)
     try {
@@ -621,6 +913,15 @@ export function DecisionsRHPage() {
       setResultatScan(resultat)
       const extrait = resultat.donnees_extraites
       const agent = resultat.agent
+      const anneesTitreExtraites = normaliserAnneesTitre(
+        extrait.annees_titre?.trim()
+          || (extrait.annees?.length > 0 ? extrait.annees.join(', ') : ''),
+      )
+      const detailsJoursExtraits = normaliserDetailsJours(
+        extrait.details_jours,
+        extrait.annees,
+        anneesTitreExtraites,
+      )
 
       if (agent) {
         setPersonnels((precedent) =>
@@ -630,12 +931,33 @@ export function DecisionsRHPage() {
 
       setFormulaire((precedent) => ({
         ...precedent,
-        numero_decision: extrait.numero_decision ? normaliserNumeroDecision(extrait.numero_decision) : precedent.numero_decision,
-        personnel: agent ? String(agent.id_personnel) : precedent.personnel,
-        direction: agent ? String(agent.direction) : precedent.direction,
-        corps_grade: agent ? [agent.corps, agent.grade].filter(Boolean).join(' ') : precedent.corps_grade,
-        indice: extrait.indice !== null && extrait.indice !== undefined ? normaliserEntier(String(extrait.indice), 8) : precedent.indice,
-        annees_titre: normaliserAnneesTitre(extrait.annees_titre?.trim() || (extrait.annees?.length > 0 ? extrait.annees.join(', ') : precedent.annees_titre)),
+        numero_decision: numeroTamponneDepuisOCR(extrait.numero_decision),
+        personnel: agent ? String(agent.id_personnel) : '',
+        direction: agent ? String(agent.direction) : '',
+        // Le corps et le grade fiables proviennent du dossier agent lié à l'IM.
+        corps_grade: agent
+          ? [agent.corps, agent.grade].filter(Boolean).join(' ')
+          : extrait.corps_grade
+            ? normaliserTexteLibre(extrait.corps_grade).slice(0, 180)
+            : '',
+        budget: extrait.budget?.trim()
+          ? normaliserTexteLibre(extrait.budget).slice(0, 100)
+          : '',
+        imputation_budgetaire: extrait.imputation_budgetaire?.trim()
+          ? normaliserTexteLibre(extrait.imputation_budgetaire).slice(0, 100)
+          : '',
+        indice: extrait.indice !== null && extrait.indice !== undefined
+          ? normaliserIndice(String(extrait.indice))
+          : '',
+        annees_titre: anneesTitreExtraites,
+        date_emission: dateISOExtraite(extrait.date_emission),
+        date_demande_reference: dateISOExtraite(extrait.date_demande_reference),
+        details_jours: detailsJoursExtraits,
+        // Le backend extrait déjà le nom/fonction depuis la zone du cachet ;
+        // ce champ était auparavant oublié lors du mapping vers le formulaire.
+        signataire: extrait.signataire?.trim()
+          ? normaliserNom(extrait.signataire)
+          : '',
         nature: extrait.source === 'OCR' ? 'OCR' : 'SAISIE_MANUELLE',
       }))
 
@@ -697,8 +1019,8 @@ export function DecisionsRHPage() {
       setErreur('Indiquez une année ou une plage d’années valide, par exemple 2026 ou 2025-2026.')
       return
     }
-    if (formulaire.indice && !entierValide(formulaire.indice, 0, 99999999)) {
-      setErreur('L’indice doit être un nombre entier positif.')
+    if (formulaire.indice && !indiceValide(formulaire.indice)) {
+      setErreur('L’indice doit contenir des chiffres, éventuellement suivis d’un suffixe alphabétique (ex. : 231 T).')
       return
     }
     if (formulaire.signataire.trim() && !nomValide(formulaire.signataire)) {
@@ -717,7 +1039,7 @@ export function DecisionsRHPage() {
       budget: formulaire.budget.trim() || 'Budget Général',
       imputation_budgetaire: formulaire.imputation_budgetaire.trim(),
       corps_grade: formulaire.corps_grade.trim(),
-      indice: formulaire.indice ? Number(formulaire.indice) : null,
+      indice: formulaire.indice.trim() || null,
       annees_titre: formulaire.annees_titre.trim(),
       details_jours: formulaire.details_jours.trim(),
       date_demande_reference: formulaire.date_demande_reference || null,
@@ -840,7 +1162,7 @@ export function DecisionsRHPage() {
     <CoquilleRH
       vue={vue}
       onVue={setVue}
-      badges={{ decisions: nombreAVerifier }}
+      badges={{ decisions: nombreAVerifier, formulaires: nombrePDFDisponibles }}
       titre={TITRES_VUES[vue].titre}
       description={TITRES_VUES[vue].description}
       actions={
@@ -854,8 +1176,8 @@ export function DecisionsRHPage() {
               </span>
             </Link>
           )}
-          <button type="button" onClick={() => void actualiser()} disabled={chargementListe || chargementStats} aria-label="Actualiser" title="Actualiser" className={`${btnContour} !px-3 !h-9`}>
-            <Icon name="refresh" className={`h-4 w-4 ${chargementListe ? 'animate-spin' : ''}`} />
+          <button type="button" onClick={() => void actualiser()} disabled={chargementListe || chargementStats || (vue === 'formulaires' && chargementFormulaires)} aria-label="Actualiser" title="Actualiser" className={`${btnContour} !px-3 !h-9`}>
+            <Icon name="refresh" className={`h-4 w-4 ${chargementListe || chargementFormulaires ? 'animate-spin' : ''}`} />
           </button>
           <button type="button" onClick={() => ouvrirTiroir('scan')} className={`${btnContour} !h-9`}>
             <Icon name="upload" className="h-4 w-4" />
@@ -1072,6 +1394,184 @@ export function DecisionsRHPage() {
         </div>
       )}
 
+      {/* ======================= FORMULAIRES OFFICIELS ======================= */}
+      {vue === 'formulaires' && (
+        <div className="min-w-0 space-y-4 rounded-[32px] border border-[#E5E5EA] bg-white p-3 sm:p-4">
+          <section className="rh-in rounded-[24px] bg-[#D0D0D9] p-5 sm:p-6" style={delai(0)}>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 items-start gap-4">
+                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-white text-[#1B1BFF]">
+                  <Icon name="file" className="h-6 w-6" />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="men-serif text-2xl text-[#0A0A0A]">Documents à faire signer</h2>
+                  <p className="mt-1 max-w-3xl text-sm leading-relaxed text-[#424249]">
+                    Les demandes sont regroupées par service après le visa favorable du chef de service.
+                    Téléchargez le formulaire officiel prérempli pour l’imprimer et recueillir les signatures manuscrites requises.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void chargerFormulairesParService()}
+                disabled={chargementFormulaires}
+                className={`${btnContour} shrink-0`}
+              >
+                <Icon name="refresh" className={`h-4 w-4 ${chargementFormulaires ? 'animate-spin' : ''}`} />
+                Actualiser
+              </button>
+            </div>
+            <div className="mt-5 grid gap-2 sm:grid-cols-3">
+              <div className="rounded-2xl bg-white p-4">
+                <p className="text-xs font-medium text-[#52525B]">Demandes visées par service</p>
+                <p className="men-serif mt-1 text-3xl tabular-nums text-[#0A0A0A]">
+                  {chargementFormulaires ? '—' : demandesValideesService.length}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-white p-4">
+                <p className="text-xs font-medium text-[#52525B]">Formulaires PDF disponibles</p>
+                <p className="men-serif mt-1 text-3xl tabular-nums text-[#1B1BFF]">
+                  {chargementFormulaires ? '—' : nombrePDFDisponibles}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-white p-4">
+                <p className="text-xs font-medium text-[#52525B]">Services concernés</p>
+                <p className="men-serif mt-1 text-3xl tabular-nums text-[#0A0A0A]">
+                  {chargementFormulaires ? '—' : groupesTousServices.length}
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <div className="rounded-[24px] bg-[#C2C2CC] p-3 sm:p-4">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,.45fr)]">
+              <label className="group relative min-w-0">
+                <span className="sr-only">Rechercher une demande ou un agent</span>
+                <Icon name="search" className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#52525B]" />
+                <input
+                  type="search"
+                  value={rechercheFormulaires}
+                  onChange={(e) => setRechercheFormulaires(e.target.value)}
+                  placeholder="Rechercher un agent, un IM, un numéro ou un type…"
+                  className="h-12 w-full rounded-full border border-[#E5E5EA] bg-white pl-11 pr-4 text-sm text-[#0A0A0A] outline-none transition focus:border-[#1B1BFF] focus:ring-4 focus:ring-[#1B1BFF]/15"
+                />
+              </label>
+              <label className="min-w-0">
+                <span className="sr-only">Filtrer par service</span>
+                <select
+                  value={serviceFiltreFormulaires}
+                  onChange={(e) => setServiceFiltreFormulaires(e.target.value)}
+                  className="h-12 w-full rounded-full border border-[#E5E5EA] bg-white px-4 text-sm text-[#0A0A0A] outline-none transition focus:border-[#1B1BFF] focus:ring-4 focus:ring-[#1B1BFF]/15"
+                >
+                  <option value="">Tous les services</option>
+                  {groupesTousServices.map((groupe) => (
+                    <option key={groupe.cle} value={groupe.cle}>
+                      {groupe.service} — {groupe.direction}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-[#424249]">
+              <span>Statut affiché : <strong className="font-semibold text-[#0A0A0A]">Approuvée par le chef de service</strong></span>
+              <span>{demandesFormulairesFiltrees.length} demande{demandesFormulairesFiltrees.length > 1 ? 's' : ''} affichée{demandesFormulairesFiltrees.length > 1 ? 's' : ''}</span>
+            </div>
+          </div>
+
+          {chargementFormulaires ? (
+            <div className="rounded-[24px] border border-[#E5E5EA] bg-white px-6 py-16 text-center">
+              <Icon name="loader" className="mx-auto h-7 w-7 animate-spin text-[#1B1BFF]" />
+              <p className="mt-3 text-sm text-[#52525B]">Chargement des demandes de tous les services…</p>
+            </div>
+          ) : groupesFormulairesFiltres.length === 0 ? (
+            <div className="rounded-[24px] border border-[#E5E5EA] bg-white px-6 py-16 text-center">
+              <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-[#1B1BFF]/10 text-[#1B1BFF]">
+                <Icon name="file" className="h-6 w-6" />
+              </span>
+              <p className="men-serif mt-4 text-xl text-[#0A0A0A]">Aucune demande à classer</p>
+              <p className="mt-1 text-sm text-[#52525B]">
+                Aucune demande ne correspond à la recherche. Les demandes apparaîtront ici après le visa favorable du chef de service.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {groupesFormulairesFiltres.map((groupe, index) => (
+                <section
+                  key={groupe.cle}
+                  className="rh-in overflow-hidden rounded-[24px] border border-[#B4B4BF] bg-[#C2C2CC] p-2 sm:p-3"
+                  style={delai(Math.min(index, 8) * 45)}
+                >
+                  <header className="flex flex-col gap-2 rounded-2xl bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#1B1BFF]/10 text-[#1B1BFF]">
+                        <Icon name="building" className="h-5 w-5" />
+                      </span>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-base font-semibold text-[#0A0A0A]">{groupe.service}</h3>
+                        <p className="truncate text-xs text-[#52525B]">{groupe.direction}</p>
+                      </div>
+                    </div>
+                    <span className="inline-flex w-fit items-center rounded-full bg-[#1B1BFF]/10 px-3 py-1 text-xs font-semibold text-[#1B1BFF]">
+                      {groupe.demandes.length} demande{groupe.demandes.length > 1 ? 's' : ''}
+                    </span>
+                  </header>
+
+                  <ul className="mt-2 space-y-2">
+                    {groupe.demandes.map((demande) => {
+                      const pdfDisponible = typePossedeFicheOfficielle(demande.type_absence)
+                      const enTelechargement = formulaireEnTelechargement === demande.id_demande
+                      return (
+                        <li key={demande.id_demande} className="flex min-w-0 flex-col gap-3 rounded-2xl bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="flex min-w-0 flex-1 items-start gap-3">
+                            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#C2C2CC] text-[#0A0A0A]">
+                              <Icon name="user" className="h-5 w-5" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                <p className="truncate text-sm font-semibold text-[#0A0A0A]">{nomAgentDemande(demande)}</p>
+                                <span className="text-xs text-[#52525B]">IM : {demande.personnel_detail?.im || '—'}</span>
+                              </div>
+                              <p className="mt-0.5 text-xs text-[#52525B]">
+                                {demande.numero_enregistrement || `Demande #${demande.id_demande}`}
+                                {' · '}{demande.type_absence_libelle}
+                              </p>
+                              <p className="mt-1 text-xs text-[#424249]">
+                                Du {dateCourteDemande(demande.date_debut)} au {dateCourteDemande(demande.date_fin)}
+                                {' · '}{demande.nombre_jours} jour{demande.nombre_jours > 1 ? 's' : ''}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+                            {pdfDisponible ? (
+                              <button
+                                type="button"
+                                onClick={() => void telechargerFormulaireOfficiel(demande)}
+                                disabled={formulaireEnTelechargement !== null}
+                                className={`${btnPrimaire} w-full sm:w-auto`}
+                              >
+                                <Icon name={enTelechargement ? 'loader' : 'file'} className={`h-4 w-4 ${enTelechargement ? 'animate-spin' : ''}`} />
+                                {enTelechargement ? 'Préparation…' : 'Télécharger le PDF officiel'}
+                              </button>
+                            ) : (
+                              <span className="inline-flex min-h-10 items-center justify-center rounded-xl bg-[#C2C2CC]/60 px-3 text-center text-xs font-medium text-[#52525B]">
+                                Pas de formulaire PDF officiel pour ce type
+                              </span>
+                            )}
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+          <p className="px-1 text-xs leading-relaxed text-[#52525B]">
+            Les formulaires officiels sont préremplis par le système. Le téléchargement est précédé d’un contrôle d’intégrité du PDF et de son journal. Les fiches PDF sont prévues pour le congé annuel, la permission et l’autorisation d’absence ; les autres types restent consultables mais ne produisent pas de fiche officielle.
+          </p>
+        </div>
+      )}
+
       {/* ================================ DÉCISIONS ================================ */}
       {vue === 'decisions' && (
         <div className="min-w-0 rounded-[32px] border border-[#E5E5EA] bg-white p-3 sm:p-4">
@@ -1126,6 +1626,7 @@ export function DecisionsRHPage() {
               <span className="sr-only">Rechercher une décision</span>
               <Icon name="search" className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#52525B] transition-colors group-focus-within:text-[#1B1BFF]" />
               <input
+                type="search"
                 value={rechercheDecision}
                 onChange={(e) => setRechercheDecision(e.target.value)}
                 placeholder="Numéro, IM ou nom"
@@ -1375,10 +1876,28 @@ export function DecisionsRHPage() {
 
                   <div className="grid grid-cols-1 gap-2 rounded-xl border border-[#E5E5EA] bg-[#FAFAF8] p-3 text-xs sm:grid-cols-2">
                     <p><span className="font-semibold">IM reconnu :</span> {resultatScan.donnees_extraites.im || 'Non reconnu'}</p>
-                    <p><span className="font-semibold">Numéro :</span> {resultatScan.donnees_extraites.numero_decision || 'Non reconnu'}</p>
+                    <p><span className="font-semibold">Agent concerné :</span> {resultatScan.agent ? nomPersonnel(resultatScan.agent) : (resultatScan.donnees_extraites.agent_concerne || 'À sélectionner manuellement')}</p>
+                    <p><span className="font-semibold">Numéro :</span> {numeroTamponneDepuisOCR(resultatScan.donnees_extraites.numero_decision) || 'Non reconnu'}</p>
                     <p><span className="font-semibold">Indice :</span> {resultatScan.donnees_extraites.indice ?? 'Non reconnu'}</p>
                     <p><span className="font-semibold">Année(s) :</span> {resultatScan.donnees_extraites.annees_titre || (resultatScan.donnees_extraites.annees?.join(', ') || 'Non reconnue(s)')}</p>
+                    <p><span className="font-semibold">Budget :</span> {resultatScan.donnees_extraites.budget || 'À vérifier'}</p>
+                    <p><span className="font-semibold">Imputation :</span> {resultatScan.donnees_extraites.imputation_budgetaire || 'À vérifier'}</p>
+                    <p><span className="font-semibold">Date d’émission :</span> {dateISOExtraite(resultatScan.donnees_extraites.date_emission) || 'À vérifier'}</p>
+                    <p><span className="font-semibold">Date de référence :</span> {dateISOExtraite(resultatScan.donnees_extraites.date_demande_reference) || 'À vérifier'}</p>
+                    <p className="whitespace-pre-line"><span className="font-semibold">Détails des jours :</span> {normaliserDetailsJours(resultatScan.donnees_extraites.details_jours, resultatScan.donnees_extraites.annees, resultatScan.donnees_extraites.annees_titre) || 'À vérifier'}</p>
+                    <p className="sm:col-span-2"><span className="font-semibold">Signataire :</span> {resultatScan.donnees_extraites.signataire || 'À vérifier manuellement'}</p>
                   </div>
+
+                  {resultatScan.donnees_extraites.avertissements && resultatScan.donnees_extraites.avertissements.length > 0 && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-xs text-amber-900">
+                      <p className="mb-1 font-semibold">Vérifications recommandées</p>
+                      <ul className="list-disc space-y-1 pl-4">
+                        {resultatScan.donnees_extraites.avertissements.map((avertissement, index) => (
+                          <li key={`${index}-${avertissement}`}>{avertissement}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                   {resultatScan.numero_deja_utilise && (
                     <div role="alert" className="rounded-xl border border-red-300 bg-red-50 px-3.5 py-3 text-sm text-red-800">
@@ -1441,7 +1960,7 @@ export function DecisionsRHPage() {
                   <div className="flex gap-2">
                     <div className="relative min-w-0 flex-1">
                       <Icon name="search" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#52525B] transition-colors group-focus-within:text-[#1B1BFF]" />
-                      <input id="recherche_personnel" value={recherchePersonnel} onChange={(e) => setRecherchePersonnel(e.target.value)} onKeyDown={rechercherAgentAuClavier} placeholder="Nom, prénom ou IM" className={`${champ} pl-10`} />
+                      <input id="recherche_personnel" type="search" value={recherchePersonnel} onChange={(e) => setRecherchePersonnel(e.target.value)} onKeyDown={rechercherAgentAuClavier} placeholder="Nom, prénom ou IM" className={`${champ} pl-10`} />
                     </div>
                     <button type="button" onClick={() => void chargerPersonnels()} className={`${btnContour} !h-11 !px-3`}><Icon name="search" className="h-4 w-4" /></button>
                   </div>
@@ -1469,7 +1988,7 @@ export function DecisionsRHPage() {
                 <div className="group"><label htmlFor="budget" className={etiquette}>Budget</label><input id="budget" value={formulaire.budget} onChange={(e) => modifierChamp('budget', e.target.value)} className={champ} /></div>
                 <div className="group"><label htmlFor="imputation_budgetaire" className={etiquette}>Imputation budgétaire</label><input id="imputation_budgetaire" value={formulaire.imputation_budgetaire} onChange={(e) => modifierChamp('imputation_budgetaire', e.target.value)} className={champ} /></div>
                 <div className="group"><label htmlFor="corps_grade" className={etiquette}>Corps / grade</label><input id="corps_grade" value={formulaire.corps_grade} onChange={(e) => modifierChamp('corps_grade', e.target.value)} className={champ} /></div>
-                <div className="group"><label htmlFor="indice" className={etiquette}>Indice</label><input id="indice" type="number" min="0" max="99999999" step="1" inputMode="numeric" value={formulaire.indice} onChange={(e) => modifierChamp('indice', e.target.value)} onKeyDown={(e) => { if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault() }} className={champ} /></div>
+                <div className="group"><label htmlFor="indice" className={etiquette}>Indice</label><input id="indice" type="text" inputMode="text" maxLength={30} pattern="[0-9]{1,6}([ -]?[A-Za-z])?" placeholder="231 ou 231 T" value={formulaire.indice} onChange={(e) => modifierChamp('indice', e.target.value)} className={champ} /></div>
               </div>
             </GroupeFormulaire>
 

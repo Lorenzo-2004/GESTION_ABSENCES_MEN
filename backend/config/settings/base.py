@@ -112,6 +112,21 @@ else:
     }
 
 # --------------------------------------------------------------------------- #
+#  Cache : LocMem par défaut pour le poste local ; configurable pour partager
+#  les compteurs de limitation de débit entre workers en production.
+# --------------------------------------------------------------------------- #
+CACHES = {
+    "default": {
+        "BACKEND": env(
+            "DJANGO_CACHE_BACKEND",
+            "django.core.cache.backends.locmem.LocMemCache",
+        ),
+        "LOCATION": env("DJANGO_CACHE_LOCATION", "men-local-cache"),
+        "TIMEOUT": int(env("DJANGO_CACHE_TIMEOUT", "600")),
+    }
+}
+
+# --------------------------------------------------------------------------- #
 #  Authentification
 # --------------------------------------------------------------------------- #
 AUTH_USER_MODEL = "personnels.Utilisateur"
@@ -151,7 +166,7 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "personnels.authentication.CookieJWTAuthentication",
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "personnels.authentication.SessionLimiteeJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "commun.pagination.PaginationStandard",
@@ -167,16 +182,32 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.UserRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "30/minute",
-        "user": "600/minute",
+        # Limites générales : suffisantes pour l'usage normal des écrans MEN.
+        "anon": "60/minute",
+        "user": "300/minute",
+        # Authentification : deux fenêtres empêchent de multiplier les essais
+        # en attendant simplement la fin d'une minute.
+        "connexion_minute": "5/minute",
+        "connexion_heure": "20/hour",
+        # Le renouvellement est distinct de la connexion pour éviter que des
+        # requêtes de session normales consomment le quota de connexion.
+        "session_refresh": "30/minute",
+        # OCR coûteux : limite par compte authentifié.
+        "ocr_scan": "10/hour",
+        # Compatibilité pour toute vue historique conservant ce scope.
         "connexion": "10/minute",
     },
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S%z",
 }
 
+# Une session navigateur dure au maximum 8 heures, même si des jetons sont
+# renouvelés. Le jeton d'accès court est renouvelable pendant cette période.
+MEN_SESSION_MAX_AGE = timedelta(hours=int(env("MEN_SESSION_MAX_HOURS", "8")))
+MEN_ACCESS_TOKEN_LIFETIME = timedelta(minutes=int(env("MEN_ACCESS_TOKEN_MINUTES", "15")))
+
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": MEN_ACCESS_TOKEN_LIFETIME,
+    "REFRESH_TOKEN_LIFETIME": MEN_SESSION_MAX_AGE,
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,

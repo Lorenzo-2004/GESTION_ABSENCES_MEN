@@ -1,10 +1,17 @@
+from datetime import timedelta
+import re
+
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 
 from rest_framework import serializers
 from rest_framework.exceptions import APIException
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .enums import Role
 from .models import Personnel, Utilisateur
@@ -47,6 +54,101 @@ class PersonnelSerializer(serializers.ModelSerializer):
             "check_presence",
         ]
 
+    @staticmethod
+    def _texte_nom_valide(valeur):
+        """Autorise les lettres Unicode, espaces, apostrophes et traits d'union."""
+        texte = valeur.strip()
+        return bool(texte) and all(
+            caractere.isalpha() or caractere in " '’-"
+            for caractere in texte
+        )
+
+    @staticmethod
+    def _libelle_administratif_valide(valeur):
+        """Autorise un libellé avec lettres, chiffres et ponctuation usuelle."""
+        texte = valeur.strip()
+        autorises = set(" '’()-./")
+        return bool(texte) and any(c.isalpha() for c in texte) and all(
+            c.isalpha() or c.isdigit() or c in autorises
+            for c in texte
+        )
+
+    def validate_im(self, value):
+        valeur = value.strip()
+        if not re.fullmatch(r"[0-9]{6}", valeur):
+            raise serializers.ValidationError(
+                "L'IM doit contenir exactement 6 chiffres."
+            )
+        return valeur
+
+    def validate_cin(self, value):
+        # Les espaces sont tolérés pour les anciennes fiches administratives,
+        # mais la valeur est enregistrée sous une forme canonique de 12 chiffres.
+        valeur = re.sub(r"\s+", "", value)
+        if not re.fullmatch(r"[0-9]{12}", valeur):
+            raise serializers.ValidationError(
+                "La CIN doit contenir exactement 12 chiffres."
+            )
+
+        doublons = Personnel.objects.exclude(
+            pk=self.instance.pk if self.instance else None,
+        ).values_list("cin", flat=True)
+        if any(re.sub(r"\s+", "", existante) == valeur for existante in doublons):
+            raise serializers.ValidationError(
+                "Cette CIN est déjà attribuée à un autre agent."
+            )
+        return valeur
+
+    def validate_nom(self, value):
+        if not self._texte_nom_valide(value):
+            raise serializers.ValidationError(
+                "Le nom ne doit contenir que des lettres, espaces, apostrophes ou traits d'union."
+            )
+        return value.strip()
+
+    def validate_prenoms(self, value):
+        if not self._texte_nom_valide(value):
+            raise serializers.ValidationError(
+                "Les prénoms ne doivent contenir que des lettres, espaces, apostrophes ou traits d'union."
+            )
+        return value.strip()
+
+    def validate_date_naissance(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError(
+                "La date de naissance ne peut pas être dans le futur."
+            )
+        return value
+
+    def validate_telephone(self, value):
+        valeur = value.strip()
+        if not valeur:
+            return valeur
+        if not re.fullmatch(r"[0-9+() .\-]+", valeur):
+            raise serializers.ValidationError(
+                "Le téléphone contient des caractères non autorisés."
+            )
+        nombre_chiffres = len(re.sub(r"\D", "", valeur))
+        if not 8 <= nombre_chiffres <= 15:
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir entre 8 et 15 chiffres."
+            )
+        return valeur
+
+    def validate_corps(self, value):
+        if not self._libelle_administratif_valide(value):
+            raise serializers.ValidationError(
+                "Le corps doit contenir au moins une lettre et uniquement des caractères autorisés."
+            )
+        return value.strip()
+
+    def validate_grade(self, value):
+        if not self._libelle_administratif_valide(value):
+            raise serializers.ValidationError(
+                "Le grade doit contenir au moins une lettre et uniquement des caractères autorisés."
+            )
+        return value.strip()
+
     def validate(self, attrs):
         direction = attrs.get(
             "direction",
@@ -57,6 +159,20 @@ class PersonnelSerializer(serializers.ModelSerializer):
             "service",
             getattr(self.instance, "service", None),
         )
+
+        if self.instance is None:
+            champs_obligatoires = {
+                "prenoms": "Les prénoms sont obligatoires.",
+                "corps": "Le corps est obligatoire.",
+                "grade": "Le grade est obligatoire.",
+            }
+            erreurs = {
+                champ: message
+                for champ, message in champs_obligatoires.items()
+                if not str(attrs.get(champ, "")).strip()
+            }
+            if erreurs:
+                raise serializers.ValidationError(erreurs)
 
         if (
             service is not None
@@ -340,6 +456,9 @@ class ConnexionSerializer(TokenObtainPairSerializer):
 
         token["role"] = user.role
         token["id_personnel"] = user.personnel_id
+        # Claim immuable pendant les rotations : empêche une session glissante
+        # de se prolonger indéfiniment en renouvelant son refresh token.
+        token["session_started"] = int(timezone.now().timestamp())
 
         return token
 
@@ -437,3 +556,38 @@ class ChangementMotDePasseSerializer(serializers.Serializer):
         )
 
         return valeur
+
+class SessionLimiteeTokenRefreshSerializer(TokenRefreshSerializer):
+    """Renouvelle un jeton uniquement avant la limite absolue de session.
+
+    Les anciens jetons sans claim dédié utilisent leur ``iat`` comme point de
+    départ ; lorsqu'ils sont encore valides, le claim est ajouté avant rotation.
+    """
+
+    def validate(self, attrs):
+        try:
+            refresh = RefreshToken(attrs["refresh"])
+        except (TokenError, TypeError, ValueError) as exc:
+            raise InvalidToken("Jeton de session invalide.") from exc
+
+        maintenant = int(timezone.now().timestamp())
+        debut_session = refresh.get("session_started", refresh.get("iat"))
+        max_age = int(
+            getattr(settings, "MEN_SESSION_MAX_AGE", timedelta(hours=8)).total_seconds()
+        )
+
+        if (
+            not isinstance(debut_session, int)
+            or isinstance(debut_session, bool)
+            or debut_session <= 0
+            or debut_session > maintenant + 60
+            or maintenant - debut_session >= max_age
+        ):
+            raise InvalidToken("La session a expiré. Veuillez vous reconnecter.")
+
+        # Compatibilité avec les refresh tokens émis avant l'ajout de ce claim.
+        if "session_started" not in refresh:
+            refresh["session_started"] = debut_session
+            attrs = {**attrs, "refresh": str(refresh)}
+
+        return super().validate(attrs)

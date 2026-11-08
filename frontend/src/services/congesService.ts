@@ -24,6 +24,17 @@ export interface DemandeConge {
   id_demande: number
   numero_enregistrement: string | null
   personnel: number
+  personnel_detail?: {
+    id_personnel: number
+    im: string
+    nom: string
+    prenoms: string
+    nom_complet?: string
+    direction: number
+    direction_libelle?: string
+    service?: number | null
+    service_libelle?: string | null
+  }
   type_absence: string
   annee_titre?: number | null
   date_evenement_prevue?: string | null
@@ -64,6 +75,44 @@ export interface FiltresDemandes {
   page?: number
   recherche?: string
   statut?: StatutDemande | ''
+}
+
+/**
+ * Liste toutes les demandes ayant reçu le visa du chef de service.
+ * La RH dispose d'un périmètre ministériel ; l'API renvoie donc les demandes
+ * de tous les services, en respectant sa pagination standard.
+ */
+export async function listerDemandesValideesParService(): Promise<DemandeConge[]> {
+  const taille = 200
+  const toutes: DemandeConge[] = []
+  let page = 1
+  let nombrePages = 1
+
+  do {
+    const { data } = await api.get<ReponsePagineeDemandes | DemandeConge[]>(
+      '/demandes/',
+      {
+        params: {
+          page,
+          taille,
+          statut_demande: 'APPROUVE_CS',
+          ordering: '-date_creation',
+        },
+      },
+    )
+
+    if (Array.isArray(data)) {
+      toutes.push(...data)
+      break
+    }
+
+    const resultats = Array.isArray(data.resultats) ? data.resultats : []
+    toutes.push(...resultats)
+    nombrePages = Math.max(1, data.nombre_pages ?? 1)
+    page += 1
+  } while (page <= nombrePages)
+
+  return toutes
 }
 
 export async function listerMesDemandes({

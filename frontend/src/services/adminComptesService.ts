@@ -111,6 +111,40 @@ function convertirPage<T>(
 }
 
 /**
+ * Charge toutes les pages d'une collection paginée par l'API MEN.
+ * La taille demandée respecte le plafond backend (200 éléments par page).
+ */
+async function chargerToutesLesPages<T>(
+  url: string,
+  parametres: Record<string, string | number> = {},
+): Promise<T[]> {
+  const taille = 200
+  const resultats: T[] = []
+  let page = 1
+  let nombrePages = 1
+
+  do {
+    const { data } = await api.get<unknown>(url, {
+      params: { ...parametres, page, taille },
+    })
+
+    if (Array.isArray(data)) {
+      resultats.push(...(data as T[]))
+      break
+    }
+
+    if (!data || typeof data !== 'object') break
+
+    const enveloppe = data as ReponsePage<T>
+    resultats.push(...(enveloppe.resultats ?? enveloppe.results ?? enveloppe.data ?? []))
+    nombrePages = Math.max(1, enveloppe.nombre_pages ?? enveloppe.total_pages ?? 1)
+    page += 1
+  } while (page <= nombrePages)
+
+  return resultats
+}
+
+/**
  * Liste les comptes ordinaires associés à une fiche de personnel.
  * Le backend réserve cet endpoint au rôle ROLE_ADMIN.
  */
@@ -140,18 +174,9 @@ export async function listerComptes(
 export async function listerPersonnelsPourCompte(
   recherche = '',
 ): Promise<PersonnelPourCompte[]> {
-  const params: Record<string, string | number> = {
-    page: 1,
-    taille: 200,
-  }
-
-  if (recherche.trim()) {
-    params.search = recherche.trim()
-  }
-
-  const { data } = await api.get<unknown>('/personnels/', { params })
-
-  return convertirPage<PersonnelPourCompte>(data, 1, 200).resultats
+  const params: Record<string, string | number> = {}
+  if (recherche.trim()) params.search = recherche.trim()
+  return chargerToutesLesPages<PersonnelPourCompte>('/personnels/', params)
 }
 
 /**
@@ -187,4 +212,102 @@ export async function modifierCompte(
   )
 
   return data
+}
+
+export type SexePersonnelAdmin = 'M' | 'F'
+export type StatutPersonnelAdmin = 'FONCTIONNAIRE' | 'ECD' | 'STAGIAIRE'
+
+export interface DirectionAdmin {
+  id_direction: number
+  code_direction: string
+  nom_direction: string
+}
+
+export interface ServiceAdmin {
+  id_service: number
+  code_service: string
+  nom_service: string
+  direction: number
+}
+
+export interface PersonnelAdmin {
+  id_personnel: number
+  im: string
+  cin: string
+  nom: string
+  prenoms: string
+  sexe: SexePersonnelAdmin
+  date_naissance: string
+  telephone: string
+  email: string
+  statut: StatutPersonnelAdmin
+  corps: string
+  grade: string
+  direction: number
+  direction_libelle?: string
+  service: number | null
+  service_libelle?: string | null
+  check_presence?: boolean
+}
+
+export interface DonneesPersonnelAdmin {
+  im: string
+  cin: string
+  nom: string
+  prenoms: string
+  sexe: SexePersonnelAdmin
+  date_naissance: string
+  telephone: string
+  email: string
+  statut: StatutPersonnelAdmin
+  corps: string
+  grade: string
+  direction: number
+  service: number | null
+  check_presence?: boolean
+}
+
+export async function listerAgentsAdmin(recherche = ''): Promise<PersonnelAdmin[]> {
+  const params: Record<string, string | number> = {}
+  if (recherche.trim()) params.search = recherche.trim()
+  return chargerToutesLesPages<PersonnelAdmin>('/personnels/', params)
+}
+
+export async function listerDirectionsAdmin(): Promise<DirectionAdmin[]> {
+  const donnees = await chargerToutesLesPages<Record<string, unknown>>('/directions/')
+  return donnees.map((item) => ({
+    id_direction: Number(item.id_direction ?? item.id),
+    code_direction: String(item.code_direction ?? ''),
+    nom_direction: String(item.nom_direction ?? item.nom ?? ''),
+  })).filter((item) => Number.isFinite(item.id_direction) && item.code_direction && item.nom_direction)
+}
+
+export async function listerServicesAdmin(): Promise<ServiceAdmin[]> {
+  const donnees = await chargerToutesLesPages<Record<string, unknown>>('/services/')
+  return donnees.map((item) => ({
+    id_service: Number(item.id_service ?? item.id),
+    code_service: String(item.code_service ?? ''),
+    nom_service: String(item.nom_service ?? item.nom ?? ''),
+    direction: Number(item.direction ?? item.direction_id ?? item.id_direction),
+  })).filter((item) => Number.isFinite(item.id_service) && Number.isFinite(item.direction) && item.code_service && item.nom_service)
+}
+
+export async function creerAgentAdmin(donnees: DonneesPersonnelAdmin): Promise<PersonnelAdmin> {
+  await initialiserCSRF()
+  const { data } = await api.post<PersonnelAdmin>('/personnels/', donnees)
+  return data
+}
+
+export async function modifierAgentAdmin(
+  id: number,
+  donnees: DonneesPersonnelAdmin,
+): Promise<PersonnelAdmin> {
+  await initialiserCSRF()
+  const { data } = await api.patch<PersonnelAdmin>(`/personnels/${id}/`, donnees)
+  return data
+}
+
+export async function supprimerAgentAdmin(id: number): Promise<void> {
+  await initialiserCSRF()
+  await api.delete(`/personnels/${id}/`)
 }

@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.middleware.csrf import get_token
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 
@@ -12,15 +15,12 @@ from rest_framework import (
     viewsets,
 )
 from rest_framework.decorators import action
-from rest_framework.exceptions import APIException
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
-from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from commun.permissions import (
     EstAdmin,
@@ -38,7 +38,53 @@ from .serializers import (
     PersonnelSerializer,
     UtilisateurAdministrationSerializer,
     UtilisateurSerializer,
+    SessionLimiteeTokenRefreshSerializer,
 )
+from .throttling import (
+    ConnexionParHeureThrottle,
+    ConnexionParMinuteThrottle,
+    RafraichissementSessionThrottle,
+)
+
+
+def _secondes_restantes_session(jeton_refresh: str) -> int:
+    """Calcule le temps restant avant l'expiration du jeton et de la session absolue."""
+    jeton = RefreshToken(jeton_refresh)
+    maintenant = int(timezone.now().timestamp())
+    debut = jeton.get("session_started", jeton.get("iat"))
+    max_age = int(
+        getattr(settings, "MEN_SESSION_MAX_AGE", timedelta(hours=8)).total_seconds()
+    )
+    if not isinstance(debut, int) or isinstance(debut, bool):
+        return 0
+    expiration_absolue = debut + max_age
+    expiration_jeton = int(jeton.get("exp", 0))
+    return max(0, min(expiration_absolue, expiration_jeton) - maintenant)
+
+
+def _max_age_cookie_access(jeton_access: str, session_restante: int) -> int:
+    """N'autorise pas le cookie d'accès à survivre à la session absolue."""
+    jeton = AccessToken(jeton_access)
+    maintenant = int(timezone.now().timestamp())
+    return max(0, min(int(jeton.get("exp", maintenant)) - maintenant, session_restante))
+
+
+def _effacer_cookies_auth(reponse):
+    """Expire les cookies JWT quand une session est absente ou expirée."""
+    secure = getattr(settings, "MEN_AUTH_COOKIE_SECURE", settings.CSRF_COOKIE_SECURE)
+    samesite = getattr(settings, "MEN_AUTH_COOKIE_SAMESITE", "Lax")
+    reponse.set_cookie("men_access", "", max_age=0, httponly=True, secure=secure, samesite=samesite, path="/api/")
+    reponse.set_cookie("men_refresh", "", max_age=0, httponly=True, secure=secure, samesite=samesite, path="/api/auth/session/")
+    return reponse
+
+
+def _reponse_session_expiree():
+    from rest_framework.response import Response
+    reponse = Response(
+        {"detail": "Votre session a expiré. Veuillez vous reconnecter.", "erreurs": {}},
+        status=status.HTTP_401_UNAUTHORIZED,
+    )
+    return _effacer_cookies_auth(reponse)
 
 
 @method_decorator(ensure_csrf_cookie, name="dispatch")
@@ -58,8 +104,7 @@ class ConnexionSessionView(APIView):
 
     authentication_classes = []
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "connexion"
+    throttle_classes = [ConnexionParMinuteThrottle, ConnexionParHeureThrottle]
 
     def post(self, request):
         serializer = ConnexionSessionSerializer(
@@ -88,14 +133,11 @@ class ConnexionSessionView(APIView):
             "Lax",
         )
 
+        session_restante = _secondes_restantes_session(refresh)
         reponse.set_cookie(
             "men_access",
             access,
-            max_age=int(
-                settings.SIMPLE_JWT[
-                    "ACCESS_TOKEN_LIFETIME"
-                ].total_seconds()
-            ),
+            max_age=_max_age_cookie_access(access, session_restante),
             httponly=True,
             secure=secure,
             samesite=samesite,
@@ -105,11 +147,7 @@ class ConnexionSessionView(APIView):
         reponse.set_cookie(
             "men_refresh",
             refresh,
-            max_age=int(
-                settings.SIMPLE_JWT[
-                    "REFRESH_TOKEN_LIFETIME"
-                ].total_seconds()
-            ),
+            max_age=session_restante,
             httponly=True,
             secure=secure,
             samesite=samesite,
@@ -119,42 +157,35 @@ class ConnexionSessionView(APIView):
         return reponse
 
 
-class SessionCookieInvalide(APIException):
-    """Erreur générique lorsqu'un cookie de session est absent ou invalide."""
-
-    status_code = status.HTTP_401_UNAUTHORIZED
-    default_detail = "Session absente ou invalide."
-    default_code = "session_invalide"
-    auth_header = "Bearer"
-
-
 @method_decorator(csrf_protect, name="dispatch")
 class RafraichissementSessionCookieView(APIView):
     """Renouvelle les JWT par cookie sans exposer les jetons dans le JSON."""
 
     authentication_classes = []
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "connexion"
+    throttle_classes = [RafraichissementSessionThrottle]
 
     def post(self, request):
         refresh_cookie = request.COOKIES.get("men_refresh")
 
         if not refresh_cookie:
-            raise SessionCookieInvalide()
+            return _reponse_session_expiree()
 
-        serializer = TokenRefreshSerializer(
+        serializer = SessionLimiteeTokenRefreshSerializer(
             data={"refresh": refresh_cookie},
         )
 
         try:
             serializer.is_valid(raise_exception=True)
-        except (TokenError, InvalidToken) as exc:
-            raise SessionCookieInvalide() from exc
+        except (TokenError, InvalidToken, TypeError, ValueError):
+            return _reponse_session_expiree()
 
         jetons = serializer.validated_data
         access = jetons["access"]
         refresh = jetons.get("refresh", refresh_cookie)
+        session_restante = _secondes_restantes_session(refresh)
+        if session_restante <= 0:
+            return _reponse_session_expiree()
 
         secure = getattr(
             settings,
@@ -175,11 +206,7 @@ class RafraichissementSessionCookieView(APIView):
         reponse.set_cookie(
             "men_access",
             access,
-            max_age=int(
-                settings.SIMPLE_JWT[
-                    "ACCESS_TOKEN_LIFETIME"
-                ].total_seconds()
-            ),
+            max_age=_max_age_cookie_access(access, session_restante),
             httponly=True,
             secure=secure,
             samesite=samesite,
@@ -189,11 +216,7 @@ class RafraichissementSessionCookieView(APIView):
         reponse.set_cookie(
             "men_refresh",
             refresh,
-            max_age=int(
-                settings.SIMPLE_JWT[
-                    "REFRESH_TOKEN_LIFETIME"
-                ].total_seconds()
-            ),
+            max_age=session_restante,
             httponly=True,
             secure=secure,
             samesite=samesite,
@@ -205,9 +228,14 @@ class RafraichissementSessionCookieView(APIView):
 
 @method_decorator(csrf_protect, name="dispatch")
 class DeconnexionSessionCookieView(APIView):
-    """Déconnecte la session navigateur et révoque le jeton de renouvellement."""
+    """Déconnecte la session navigateur et révoque le jeton de renouvellement.
 
-    permission_classes = [permissions.IsAuthenticated]
+    La déconnexion reste disponible même après l'expiration du jeton d'accès ;
+    la protection CSRF reste obligatoire et les cookies sont toujours effacés.
+    """
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         refresh_cookie = request.COOKIES.get("men_refresh")
@@ -260,8 +288,14 @@ class ConnexionView(TokenObtainPairView):
     """Connexion historique : access, refresh et profil utilisateur."""
 
     serializer_class = ConnexionSerializer
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "connexion"
+    throttle_classes = [ConnexionParMinuteThrottle, ConnexionParHeureThrottle]
+
+
+class RafraichissementJWTView(TokenRefreshView):
+    """Renouvellement historique soumis à la même limite absolue de session."""
+
+    serializer_class = SessionLimiteeTokenRefreshSerializer
+    throttle_classes = [RafraichissementSessionThrottle]
 
 
 class DeconnexionView(APIView):
@@ -320,7 +354,7 @@ class ChangementMotDePasseView(APIView):
 
 
 class PersonnelViewSet(viewsets.ModelViewSet):
-    """Fiches du personnel : lecture selon le périmètre, écriture RH."""
+    """Fiches du personnel : lecture selon le périmètre, écriture RH et administrateur."""
 
     serializer_class = PersonnelSerializer
     permission_classes = [

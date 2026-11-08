@@ -402,6 +402,7 @@ export function HistoriqueCongesPage() {
                 <Icon name="search" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#86868B]" />
                 <input
                   id="recherche-historique"
+                  type="search"
                   value={rechercheSaisie}
                   onChange={(event) => setRechercheSaisie(event.target.value)}
                   placeholder="Ex. DA-2026-00001"

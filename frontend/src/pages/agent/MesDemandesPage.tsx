@@ -14,7 +14,7 @@ import {
   type StatutDemande,
 } from '../../services/congesService'
 import { Icon, Message, type IconName } from '../../components/men/ui'
-import { delai, useCompteur } from '../../components/men/ui-outils'
+import { delai } from '../../components/men/ui-outils'
 import {
   CoquilleAgent,
   Tiroir,
@@ -78,25 +78,6 @@ const champ =
 
 const etiquette = 'mb-1.5 block text-sm font-medium text-[#0A0A0A]'
 
-const TONS_KPI = {
-  bleu: {
-    fond: 'from-[#1B1BFF] via-[#1B1BFF] to-[#1B1BFF]',
-    ombre: 'shadow-[0_22px_38px_-22px_rgba(27,27,255,.8)]',
-  },
-  bleuMoyen: {
-    fond: 'from-[#1B1BFF] via-[#1B1BFF] to-[#38BDF8]',
-    ombre: 'shadow-[0_22px_38px_-22px_rgba(27,27,255,.8)]',
-  },
-  vert: {
-    fond: 'from-[#00FF9C] via-[#00FF9C] to-[#00FF9C]',
-    ombre: 'shadow-[0_22px_38px_-22px_rgba(63,125,32,.8)]',
-  },
-  ambre: {
-    fond: 'from-[#9A4A0A] via-[#B45309] to-[#D97706]',
-    ombre: 'shadow-[0_22px_38px_-22px_rgba(180,83,9,.8)]',
-  },
-} as const
-
 const TITRES_VUES: Record<VueAgent, { titre: string; description: string }> = {
   apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et soldes' },
   demandes: { titre: 'Mes demandes', description: 'Consultez vos demandes et leur état' },
@@ -149,42 +130,6 @@ function statutLisible(demande: DemandeConge): string {
 /* ------------------------------------------------------------------ */
 /*  Composants locaux                                                  */
 /* ------------------------------------------------------------------ */
-
-function TuileKpi({ libelle, valeur, note, icone, ton, retard }: {
-  libelle: string
-  valeur: number
-  note: string
-  icone: IconName
-  ton: keyof typeof TONS_KPI
-  retard: number
-}) {
-  const affiche = useCompteur(valeur)
-  const s = TONS_KPI[ton]
-  return (
-    <div
-      className={`rh-in rh-sheen relative overflow-hidden rounded-[20px] bg-gradient-to-br p-5 text-white sm:p-6 ${s.fond} ${s.ombre}`}
-      style={{ ...delai(retard), '--d': `${retard}ms` } as React.CSSProperties}
-    >
-      <svg aria-hidden="true" viewBox="0 0 200 200" className="pointer-events-none absolute -right-12 -top-14 h-48 w-48 text-white">
-        <g className="rh-orbit" fill="none" stroke="currentColor">
-          <circle cx="100" cy="100" r="90" strokeOpacity=".12" />
-          <circle cx="100" cy="100" r="64" strokeOpacity=".16" strokeDasharray="2 8" />
-          <path d="M100 10 A90 90 0 0 1 190 100" strokeOpacity=".4" strokeWidth="2" strokeLinecap="round" />
-        </g>
-      </svg>
-      <div className="relative flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-white/85">{libelle}</p>
-          <p className="men-serif mt-2 text-5xl leading-none tabular-nums">{affiche}</p>
-        </div>
-        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/25 backdrop-blur-sm">
-          <Icon name={icone} className="h-5 w-5" />
-        </span>
-      </div>
-      <p className="relative mt-5 text-xs font-medium text-white/85">{note}</p>
-    </div>
-  )
-}
 
 function Panneau({ titre, sousTitre, icone, accent, action, retard, className = '', children }: {
   titre: string
@@ -360,9 +305,6 @@ export function MesDemandesPage() {
     </>
   )
 
-  const enAttente = demandes.filter((d) => d.statut_demande === 'EN_ATTENTE').length
-  const validees = demandes.filter((d) => d.statut_demande === 'VALIDE_DIR').length
-  const rejetees = demandes.filter((d) => d.statut_demande === 'REJETE').length
 
   return (
     <CoquilleAgent
@@ -381,64 +323,6 @@ export function MesDemandesPage() {
       <div className="adm-root min-w-0 space-y-6">
         {!tiroirOuvert && messages}
 
-        {/* ---- HERO : carte gradient + état des demandes ---- */}
-        <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-          <section className="rh-in rh-sheen relative min-w-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#1B1BFF] via-[#1B1BFF] to-[#1B1BFF] p-6 text-white shadow-[0_20px_38px_-20px_rgba(10,61,92,.75)] sm:p-8">
-            <svg aria-hidden="true" viewBox="0 0 400 400" className="pointer-events-none absolute -right-24 -top-28 h-[420px] w-[420px] text-white">
-              <g className="rh-orbit" fill="none" stroke="currentColor" strokeLinecap="round">
-                <circle cx="200" cy="200" r="190" strokeOpacity=".07" />
-                <circle cx="200" cy="200" r="150" strokeOpacity=".09" strokeDasharray="2 10" />
-                <circle cx="200" cy="200" r="110" strokeOpacity=".12" />
-                <path d="M200 10 A190 190 0 0 1 390 200" strokeOpacity=".28" strokeWidth="2" />
-                <path d="M200 90 A110 110 0 0 1 310 200" strokeOpacity=".22" strokeWidth="2" />
-              </g>
-            </svg>
-            <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-[0.05] [background-image:linear-gradient(white_1px,transparent_1px),linear-gradient(90deg,white_1px,transparent_1px)] [background-size:36px_36px]" />
-
-            <div className="relative flex h-full min-w-0 flex-col">
-              <h2 className="men-serif mt-2 max-w-lg text-3xl font-normal leading-[1.1] sm:text-4xl">
-                {chargementDemandes ? 'Chargement…' : total > 0 ? `${total} demande${total > 1 ? 's' : ''}` : 'Aucune demande'}
-              </h2>
-              <p className="mt-4 max-w-md text-sm leading-relaxed text-white/75">
-                Consultez l’historique, vérifiez les validations reçues et gardez une trace des décisions prises sur vos demandes.
-              </p>
-            </div>
-          </section>
-
-          <section className={`rh-in flex min-w-0 flex-col justify-center gap-6 p-6 sm:flex-row sm:items-center ${carte}`} style={delai(120)}>
-            <div className="mx-auto grid h-36 w-36 shrink-0 place-items-center rounded-full border border-[#D9DDFF] bg-[#F6F7FF] p-[7px] shadow-[0_8px_22px_-12px_rgba(27,27,255,.22)] ring-8 ring-[#E9EBFF]/80 sm:mx-0">
-              <div className="grid h-full w-full place-items-center rounded-full border border-[#BFC6FF] bg-[#E5E9FF] text-center shadow-[inset_0_1px_3px_rgba(27,27,255,.05)]">
-                <p className="men-serif text-3xl leading-none tabular-nums text-[#0A0A0A]">{chargementDemandes ? 0 : total}</p>
-                <p className="mt-1 text-xs font-medium text-[#86868B]">demandes</p>
-              </div>
-            </div>
-            <ul className="min-w-0 flex-1 divide-y divide-[#F5F5F7]">
-              <li className="pb-3">
-                <div className="flex items-center gap-2 text-xs text-[#86868B]">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  En attente
-                </div>
-                <p className="men-serif mt-1 text-2xl tabular-nums text-[#0A0A0A]">{enAttente}</p>
-              </li>
-              <li className="pt-3">
-                <div className="flex items-center gap-2 text-xs text-[#86868B]">
-                  <span className="h-2 w-2 rounded-full bg-[#00FF9C]" />
-                  Validées
-                </div>
-                <p className="men-serif mt-1 text-2xl tabular-nums text-[#0A0A0A]">{validees}</p>
-              </li>
-            </ul>
-          </section>
-        </div>
-
-        {/* ---- KPI en tuiles gradient ---- */}
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <TuileKpi libelle="Total" valeur={chargementDemandes ? 0 : total} note="Demandes enregistrées" icone="file" ton="bleu" retard={160} />
-          <TuileKpi libelle="En attente" valeur={enAttente} note="En cours d’examen" icone="clock" ton="ambre" retard={220} />
-          <TuileKpi libelle="Validées" valeur={validees} note="Décision favorable" icone="check" ton="vert" retard={280} />
-          <TuileKpi libelle="Rejetées" valeur={rejetees} note="Décision défavorable" icone="alert" ton="bleuMoyen" retard={340} />
-        </div>
-
         {/* ---- PANNEAU RECHERCHE (sans barre d'accent) ---- */}
         <Panneau titre="Rechercher" sousTitre="Filtrer les demandes" icone="search" accent="#1B1BFF" retard={400}>
           <form onSubmit={rechercher} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_220px_auto] lg:items-end">
@@ -446,7 +330,7 @@ export function MesDemandesPage() {
               <label htmlFor="recherche-demande" className={etiquette}>Rechercher</label>
               <div className="relative">
                 <Icon name="search" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#86868B]" />
-                <input id="recherche-demande" value={rechercheSaisie} onChange={(event) => setRechercheSaisie(event.target.value)} placeholder="Numéro de demande…" className={`${champ} pl-10`} />
+                <input id="recherche-demande" type="search" value={rechercheSaisie} onChange={(event) => setRechercheSaisie(event.target.value)} placeholder="Numéro de demande…" className={`${champ} pl-10`} />
               </div>
             </div>
             <div className="group">

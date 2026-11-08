@@ -270,6 +270,9 @@ def verifier_regles(demande):
 
     # RG-03 / RG-04 : seuls les congés annuels utilisent le solde annuel.
     if demande.type_absence == TypeAbsence.CONGE_ANNUEL:
+        # Une première tranche doit prendre exactement 15 jours ; les suivantes
+        # sont possibles à hauteur de 15 jours maximum chacune.
+        quotas.verifier_tranches_conge_annuel(demande, nombre_jours)
         quotas.verifier_solde_conge_annuel(demande, nombre_jours)
 
     # RG-01 : plafond mensuel et annuel des permissions/autorisations uniquement.

@@ -1,11 +1,38 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.middleware.csrf import CsrfViewMiddleware
+from django.utils import timezone
 
 from rest_framework.authentication import CSRFCheck
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 
-class CookieJWTAuthentication(JWTAuthentication):
+class SessionLimiteeJWTAuthentication(JWTAuthentication):
+    """Refuse les jetons d'accès issus d'une session ayant dépassé sa durée absolue."""
+
+    def get_user(self, validated_token):
+        debut_session = validated_token.get("session_started", validated_token.get("iat"))
+        maintenant = int(timezone.now().timestamp())
+        max_age = int(
+            getattr(settings, "MEN_SESSION_MAX_AGE", timedelta(hours=8)).total_seconds()
+        )
+        if (
+            not isinstance(debut_session, int)
+            or isinstance(debut_session, bool)
+            or debut_session <= 0
+            or debut_session > maintenant + 60
+            or maintenant - debut_session >= max_age
+        ):
+            raise AuthenticationFailed(
+                "Votre session a expiré. Veuillez vous reconnecter.",
+                code="session_expiree",
+            )
+        return super().get_user(validated_token)
+
+
+class CookieJWTAuthentication(SessionLimiteeJWTAuthentication):
     """
     Authentifie les requêtes avec le cookie HttpOnly men_access.
 

@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 import pdfplumber
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from pypdf import PdfReader
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -18,7 +19,7 @@ from organisation.models import Direction, Service
 from personnels.enums import Role, Statut
 from personnels.models import Personnel, Utilisateur
 
-from .models import DecisionConge, DemandeAbsence, TraceSignature
+from .models import DecisionConge, DemandeAbsence, SoldeConge, TraceSignature
 
 
 def traits_du_bloc_type(contenu_pdf):
@@ -135,6 +136,152 @@ class AuthentificationTests(BaseAPICase):
 
 
 class DemandeAPITests(BaseAPICase):
+    def test_regle_tranche_annuelle_premiere_puis_tranches_suivantes(self):
+        self.connecter(self.compte_agent)
+
+        premiere_regle = self.client.get(
+            "/api/demandes/regle-tranche-annuelle/",
+            {"annee_titre": 2026},
+        )
+        self.assertEqual(premiere_regle.status_code, status.HTTP_200_OK, premiere_regle.data)
+        self.assertTrue(premiere_regle.data["premiere_tranche"])
+        self.assertEqual(premiere_regle.data["jours_obligatoires"], 15)
+        self.assertEqual(premiere_regle.data["jours_maximum"], 15)
+
+        DemandeAbsence.objects.create(
+            personnel=self.agent,
+            type_absence="CONGE_ANNUEL",
+            motif="Première tranche de test",
+            date_debut=date(2026, 3, 2),
+            date_fin=date(2026, 3, 16),
+            annee_titre=2026,
+            nombre_jours=15,
+            lieu_jouissance="Antananarivo",
+            statut_demande="EN_ATTENTE",
+        )
+
+        tranche_suivante = self.client.get(
+            "/api/demandes/regle-tranche-annuelle/",
+            {"annee_titre": 2026},
+        )
+        self.assertEqual(tranche_suivante.status_code, status.HTTP_200_OK, tranche_suivante.data)
+        self.assertFalse(tranche_suivante.data["premiere_tranche"])
+        self.assertIsNone(tranche_suivante.data["jours_obligatoires"])
+        self.assertEqual(tranche_suivante.data["jours_minimum"], 1)
+        self.assertEqual(tranche_suivante.data["jours_maximum"], 15)
+
+    @override_settings(MEN_APPLIQUER_DELAIS_REGLEMENTAIRES=False)
+    def test_api_impose_15_jours_pour_premiere_tranche_et_15_max_apres(self):
+        self.activer_agent(self.agent, annees="2026")
+        self.connecter(self.compte_agent)
+
+        def soumettre_annuel(debut, fin):
+            return self.client.post(
+                "/api/demandes/",
+                {
+                    "signature_agent": SIGNATURE_TEST_DATA_URI,
+                    "motif": "Congé annuel de test",
+                    "lieu_jouissance": "Antananarivo",
+                    "type_absence": "CONGE_ANNUEL",
+                    "annee_titre": 2026,
+                    "date_debut": debut,
+                    "date_fin": fin,
+                },
+                format="json",
+            )
+
+        trop_courte = soumettre_annuel("2026-03-02", "2026-03-15")
+        self.assertEqual(trop_courte.status_code, status.HTTP_400_BAD_REQUEST, trop_courte.data)
+        self.assertIn("date_fin", trop_courte.data.get("erreurs", {}))
+
+        premiere = soumettre_annuel("2026-03-02", "2026-03-16")
+        self.assertEqual(premiere.status_code, status.HTTP_201_CREATED, premiere.data)
+        self.assertEqual(premiere.data["nombre_jours"], 15)
+
+        suivante = soumettre_annuel("2026-06-01", "2026-06-10")
+        self.assertEqual(suivante.status_code, status.HTTP_201_CREATED, suivante.data)
+        self.assertEqual(suivante.data["nombre_jours"], 10)
+
+        depassement = soumettre_annuel("2026-09-01", "2026-09-16")
+        self.assertEqual(depassement.status_code, status.HTTP_400_BAD_REQUEST, depassement.data)
+
+    def test_chef_saisit_pour_un_agent_sans_signature_obligatoire(self):
+        """La saisie déléguée conserve l'acteur chef sans exiger la signature de l'agent."""
+        self.connecter(self.compte_chef)
+        reponse = self.client.post(
+            "/api/demandes/",
+            {
+                "personnel": self.agent.pk,
+                "motif": "Permission saisie par le chef pour l'agent",
+                "lieu_jouissance": "Antananarivo",
+                "type_absence": "PERMISSION",
+                "date_debut": "2026-03-02",
+                "date_fin": "2026-03-03",
+            },
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
+        demande = DemandeAbsence.objects.get(pk=reponse.data["id_demande"])
+        self.assertEqual(demande.personnel_id, self.agent.pk)
+        self.assertFalse(demande.signature_agent)
+        self.assertEqual(demande.signature_agent_sha256, "")
+        self.assertIsNone(demande.date_signature_agent)
+        self.assertIsNone(demande.signature_agent_compte_id)
+
+        trace = demande.traces_signature.get(
+            evenement=TraceSignature.Evenement.DEMANDE_SAISIE_DELEGUEE
+        )
+        self.assertEqual(trace.acteur_id_snapshot, self.compte_chef.pk)
+        self.assertEqual(trace.details["personnel_cible_im"], self.agent.im)
+        self.assertEqual(trace.details["signature_demandeur"], "non_fournie_non_obligatoire")
+
+    def test_chef_ne_peut_pas_saisir_sans_signature_pour_un_autre_service(self):
+        service_externe = Service.objects.create(
+            code_service="S2", nom_service="Service externe", direction=self.direction
+        )
+        agent_externe = Personnel.objects.create(
+            im="IM005", cin="CINIM005", direction=self.direction, service=service_externe,
+            nom="AGENTEXTERNE", prenoms="Test", sexe="M",
+            date_naissance=date(1990, 1, 1), statut=Statut.FONCTIONNAIRE,
+            corps="Corps de test", grade="Grade de test", email="im005@men.local",
+        )
+        self.connecter(self.compte_chef)
+        reponse = self.client.post(
+            "/api/demandes/",
+            {
+                "personnel": agent_externe.pk,
+                "motif": "Demande hors périmètre",
+                "lieu_jouissance": "Antananarivo",
+                "type_absence": "PERMISSION",
+                "date_debut": "2026-03-02",
+                "date_fin": "2026-03-03",
+            },
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_403_FORBIDDEN, reponse.data)
+        self.assertFalse(DemandeAbsence.objects.filter(personnel=agent_externe).exists())
+
+    def test_demande_deleguee_sans_signature_genere_le_pdf_officiel(self):
+        self.connecter(self.compte_chef)
+        reponse = self.client.post(
+            "/api/demandes/",
+            {
+                "personnel": self.agent.pk,
+                "motif": "Permission saisie par le chef pour le PDF",
+                "lieu_jouissance": "Antananarivo",
+                "type_absence": "PERMISSION",
+                "date_debut": "2026-03-02",
+                "date_fin": "2026-03-03",
+            },
+            format="json",
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
+        demande_id = reponse.data["id_demande"]
+        pdf = self.client.get(f"/api/demandes/{demande_id}/formulaire/")
+        self.assertEqual(pdf.status_code, status.HTTP_200_OK, getattr(pdf, "data", None))
+        contenu = b"".join(pdf.streaming_content)
+        self.assertTrue(contenu.startswith(b"%PDF-"))
+
     def test_agent_soumet_une_permission(self):
         self.connecter(self.compte_agent)
         reponse = self.client.post(
@@ -427,8 +574,8 @@ class CircuitValidationAPITests(BaseAPICase):
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
         return reponse.data["id_demande"]
     
-    def test_conge_annuel_20_jours_ne_compte_pas_sa_demande_deux_fois(self):
-        """Une demande déjà enregistrée par la vue ne s'engage pas deux fois."""
+    def test_conge_annuel_15_jours_ne_compte_pas_sa_demande_deux_fois(self):
+        """Une demande de 15 jours déjà enregistrée par la vue ne s'engage pas deux fois."""
         self.activer_agent(self.agent)
         self.connecter(self.compte_agent)
         reponse = self.client.post(
@@ -438,14 +585,14 @@ class CircuitValidationAPITests(BaseAPICase):
                 "motif": "Motif de test", "lieu_jouissance": "Antananarivo", "type_absence": "CONGE_ANNUEL",
                 "annee_titre": 2026,
                 "date_debut": "2026-03-02",
-                "date_fin": "2026-03-21",
+                "date_fin": "2026-03-16",
                 "motif": "Congé annuel demandé",
                 "lieu_jouissance": "Antananarivo",
             },
             format="json",
         )
         self.assertEqual(reponse.status_code, status.HTTP_201_CREATED, reponse.data)
-        self.assertEqual(reponse.data["nombre_jours"], 20)
+        self.assertEqual(reponse.data["nombre_jours"], 15)
 
     def test_annee_titre_choisie_utilisee_pour_solde_et_decompte(self):
         """Le congé est imputé à l'année choisie, même si les dates sont en 2026."""
@@ -581,7 +728,17 @@ class CircuitValidationAPITests(BaseAPICase):
             if obj.get_object().get("/Subtype") == "/Image"
         ]
         self.assertTrue(ressources_image, "Le scan original du formulaire doit rester le fond PDF.")
-        self.assertEqual((ressources_image[0]["/Width"], ressources_image[0]["/Height"]), (997, 1337))
+        # Le PDF contient aussi une image pour la signature agent (720x180).
+        # Ne pas dépendre de l'ordre des XObject : pypdf peut lister la signature
+        # avant l'image du formulaire après merge_page().
+        fonds_formulaire = [
+            image for image in ressources_image
+            if (image.get("/Width"), image.get("/Height")) == (997, 1337)
+        ]
+        self.assertEqual(
+            len(fonds_formulaire), 1,
+            "Le scan officiel 997x1337 doit être conservé exactement une fois comme fond.",
+        )
 
         # Les libellés du formulaire sont une image scannée et ne sont pas extractibles.
         # On vérifie le calque texte ajouté par-dessus.
@@ -614,8 +771,13 @@ class CircuitValidationAPITests(BaseAPICase):
             for obj in page["/Resources"].get_object()["/XObject"].values()
             if obj.get_object().get("/Subtype") == "/Image"
         ]
-        self.assertEqual(len(image_xobjects), 1)
-        self.assertEqual((image_xobjects[0]["/Width"], image_xobjects[0]["/Height"]), (997, 1337))
+        # Une seconde image peut être présente : c'est la signature manuscrite
+        # capturée à la soumission. La base du formulaire doit rester unique.
+        fonds_formulaire = [
+            image for image in image_xobjects
+            if (image.get("/Width"), image.get("/Height")) == (997, 1337)
+        ]
+        self.assertEqual(len(fonds_formulaire), 1)
 
         traits = traits_du_bloc_type(contenu)
         self.assertEqual(len(traits), 1, traits)
@@ -810,6 +972,8 @@ class ConformiteDiagrammesTests(BaseAPICase):
                 "numero_decision": "DEC-CONF", "personnel": self.agent.pk,
                 "direction": self.direction.pk, "annees_titre": "2026",
                 "date_emission": "2026-01-05",
+                "budget": "Budget Général",
+                "imputation_budgetaire": "IMPUTATION-TEST",
             },
             format="json",
         )
@@ -819,6 +983,32 @@ class ConformiteDiagrammesTests(BaseAPICase):
         )
         self.assertEqual(reponse.status_code, status.HTTP_200_OK)
         self.assertTrue(reponse.data["est_valide"])
+
+    def test_confirmer_refuse_decision_sans_imputation_budgetaire(self):
+        """Une décision sans chapitre ne doit pas être activée : le PDF serait incomplet."""
+        self.connecter(self.compte_rh)
+        creation = self.client.post(
+            "/api/decisions/",
+            {
+                "numero_decision": "DEC-CONF-SANS-IMPUTATION",
+                "personnel": self.agent.pk,
+                "direction": self.direction.pk,
+                "annees_titre": "2026",
+                "date_emission": "2026-01-05",
+                "budget": "Budget Général",
+            },
+            format="json",
+        )
+        self.assertEqual(creation.status_code, status.HTTP_201_CREATED, creation.data)
+
+        reponse = self.client.post(
+            f"/api/decisions/{creation.data['id_decision']}/confirmer/", format="json"
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST, reponse.data)
+
+        decision = DecisionConge.objects.get(pk=creation.data["id_decision"])
+        self.assertFalse(decision.est_valide)
+        self.assertFalse(SoldeConge.objects.filter(personnel=self.agent, annee=2026).exists())
 
     def _demande_permission(self, personnel_compte):
         self.connecter(personnel_compte)
@@ -1100,13 +1290,36 @@ class ScanDecisionAPITests(BaseAPICase):
         self.assertFalse(reponse.data["numero_deja_utilise"])
 
     def test_numero_deja_utilise_signale(self):
+        from unittest.mock import patch
+
         DecisionConge.objects.create(
             numero_decision="2205", personnel=self.agent, direction=self.direction,
             annees_titre="2025", date_emission=date(2025, 1, 5),
         )
         self.connecter(self.compte_rh)
-        reponse = self.client.post("/api/decisions/scan/", {"fichier": self._pdf_decision()})
+
+        # Le numéro du titre « DECISION N° ... » n'est pas une preuve du numéro
+        # tamponné. On simule ici un OCR qui a effectivement reconnu le cachet,
+        # afin de tester indépendamment le contrôle de doublon de l'API.
+        extraction_ocr = {
+            "source": "OCR",
+            "im": "123456",
+            "numero_decision": "2205",
+            "annees": [2026],
+            "agent_concerne": "",
+            "champs_complementaires_manquants": [],
+            "avertissements": [],
+        }
+        with patch(
+            "conges.services.ocr.extraire_donnees_decision",
+            return_value=extraction_ocr,
+        ):
+            reponse = self.client.post(
+                "/api/decisions/scan/", {"fichier": self._pdf_decision()}
+            )
+
         self.assertEqual(reponse.status_code, status.HTTP_200_OK, reponse.data)
+        self.assertEqual(reponse.data["donnees_extraites"]["numero_decision"], "2205")
         self.assertTrue(reponse.data["numero_deja_utilise"])
 
 
@@ -1251,12 +1464,14 @@ class FormulairePdfRemplissageTests(BaseAPICase):
         premier_mot = corps.split()[0]
         self.assertLess(haut_de(premier_mot, 330, 420) - haut_de(self.agent.im), 3)
 
-    def test_numero_d_ordre_et_date_de_la_demande_sont_ecrits(self):
+    def test_zone_numero_officiel_reste_vide_et_date_demande_est_ecrite(self):
         contenu, donnees = self._formulaire("PERMISSION")
         with pdfplumber.open(BytesIO(contenu)) as pdf:
             texte = pdf.pages[0].extract_text() or ""
         numero_ordre = donnees["numero_enregistrement"].rsplit("-", 1)[-1]
-        self.assertIn(numero_ordre, texte)
+        # Le numéro d'enregistrement reste une donnée interne, mais ne doit pas
+        # être imprimé dans la zone « N° 2026-.....-MEN/SG/DSI » du PDF officiel.
+        self.assertNotIn(numero_ordre, texte)
         self.assertIn(date.today().strftime("%d/%m/%Y"), texte)
 
 

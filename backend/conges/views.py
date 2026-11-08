@@ -16,6 +16,7 @@ from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from django.utils import timezone
 
@@ -74,21 +75,50 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        """Crée la demande pour l'agent connecté puis applique les règles de soumission.
+        """Soumet une demande personnelle signée ou une saisie déléguée tracée.
 
-        La conception (useCase UC_SaisieChef_Delegated) autorise un chef de service à
-        saisir une demande pour un agent de son service : dans ce cas le champ
-        `personnel` fourni par le client est honoré après contrôle du périmètre.
+        La signature électronique reste obligatoire pour l'agent qui dépose sa
+        propre demande. Lorsqu'un chef de service sélectionne un autre agent de
+        son service, il peut saisir le dossier sans signer à sa place. L'acteur
+        et le caractère délégué de la saisie sont alors conservés dans le journal.
         """
         from .services.demandes import soumettre_demande
+        from .services.signatures import ajouter_trace_signature
+        from .models import TraceSignature
 
-        # La transaction doit commencer AVANT serializer.save(). Le service de
-        # soumission valide les règles après la création : sans cette transaction
-        # externe, une ValidationError laisserait une demande invalide en base.
         cible = self._personnel_cible(serializer.validated_data.pop("personnel", None))
-        fichier_signature = serializer.validated_data.get("signature_agent")
-        if fichier_signature is None:
-            raise ValidationError({"signature_agent": "La signature est obligatoire avant la soumission."})
+        demandeur = personnel_de(self.request.user)
+        saisie_deleguee = bool(
+            role_de(self.request.user) == Role.CHEF_SERVICE
+            and demandeur is not None
+            and cible.pk != demandeur.pk
+        )
+        fichier_signature = serializer.validated_data.pop("signature_agent", None)
+        if fichier_signature == "":
+            fichier_signature = None
+
+        if fichier_signature is None and not saisie_deleguee:
+            raise ValidationError({
+                "signature_agent": "La signature est obligatoire pour une demande personnelle."
+            })
+
+        if saisie_deleguee and fichier_signature is None:
+            demande = serializer.save(personnel=cible)
+            soumettre_demande(demande)
+            ajouter_trace_signature(
+                demande,
+                TraceSignature.Evenement.DEMANDE_SAISIE_DELEGUEE,
+                self.request.user,
+                details={
+                    "source": "saisie_deleguee_chef_service",
+                    "personnel_cible_id": cible.pk,
+                    "personnel_cible_im": cible.im,
+                    "signature_demandeur": "non_fournie_non_obligatoire",
+                    "acteur_role": role_de(self.request.user),
+                },
+            )
+            serializer.instance = demande
+            return
 
         position = fichier_signature.tell() if hasattr(fichier_signature, "tell") else 0
         try:
@@ -100,15 +130,13 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
 
         demande = serializer.save(
             personnel=cible,
+            signature_agent=fichier_signature,
             date_signature_agent=timezone.now(),
             signature_agent_sha256=empreinte,
             signature_agent_compte=self.request.user,
         )
         try:
             soumettre_demande(demande)
-            from .services.signatures import ajouter_trace_signature
-            from .models import TraceSignature
-
             ajouter_trace_signature(
                 demande,
                 TraceSignature.Evenement.SIGNATURE_AGENT_ENREGISTREE,
@@ -134,7 +162,11 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
 
         # Saisie déléguée : réservée au chef de service, pour ses agents.
         if role_de(self.request.user) == Role.CHEF_SERVICE:
-            if personnel_demande.service_id == demandeur.service_id:
+            if (
+                demandeur.service_id is not None
+                and personnel_demande.service_id == demandeur.service_id
+                and personnel_demande.direction_id == demandeur.direction_id
+            ):
                 return personnel_demande
             raise PermissionDenied("Cet agent n'appartient pas à votre service.")
         if role_de(self.request.user) in (Role.RH, Role.ADMIN):
@@ -243,6 +275,83 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
             for d in requete
         ]
         return Response(PlanningEquipeSerializer(donnees, many=True).data)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        permission_classes=[permissions.IsAuthenticated],
+        url_path="regle-tranche-annuelle",
+    )
+    def regle_tranche_annuelle(self, request):
+        """Décrit la règle de tranche pour l'année de titre choisie par le demandeur.
+
+        Le backend reste l'autorité finale : ce point de lecture sert au formulaire
+        React à afficher la règle et à guider la saisie avant la soumission.
+        """
+        from personnels.models import Personnel
+        from .regles import DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL, DUREE_MAX_TRANCHE_CONGE_ANNUEL
+        from .services.quotas import etat_tranches_conge_annuel
+
+        try:
+            annee = int(request.query_params.get("annee_titre", ""))
+        except (TypeError, ValueError):
+            raise ValidationError({"annee_titre": "Une année de titre valide est obligatoire."})
+        if not 1900 <= annee <= 9999:
+            raise ValidationError({"annee_titre": "L'année de titre doit être comprise entre 1900 et 9999."})
+
+        demandeur = personnel_de(request.user)
+        role = role_de(request.user)
+        personnel_param = request.query_params.get("personnel")
+        cible = demandeur
+
+        if personnel_param:
+            try:
+                id_personnel = int(personnel_param)
+            except (TypeError, ValueError):
+                raise ValidationError({"personnel": "L'identifiant du personnel doit être un entier valide."})
+            trouve = get_object_or_404(Personnel.objects.select_related("direction", "service"), pk=id_personnel)
+
+            if role in (Role.RH, Role.ADMIN):
+                cible = trouve
+            elif role == Role.CHEF_SERVICE:
+                if (
+                    demandeur is None
+                    or demandeur.service_id is None
+                    or trouve.direction_id != demandeur.direction_id
+                    or trouve.service_id != demandeur.service_id
+                ):
+                    raise PermissionDenied("Cet agent n'appartient pas à votre service.")
+                cible = trouve
+            elif demandeur is None or trouve.pk != demandeur.pk:
+                raise PermissionDenied("Vous ne pouvez consulter cette règle que pour vous-même.")
+            else:
+                cible = trouve
+
+        if cible is None:
+            raise PermissionDenied("Votre compte n'est associé à aucun personnel. Sélectionnez un agent autorisé.")
+
+        etat = etat_tranches_conge_annuel(cible, annee)
+        premiere = etat["premiere_tranche"]
+        return Response({
+            "annee_titre": annee,
+            "personnel_id": cible.pk,
+            "premiere_tranche": premiere,
+            "jours_obligatoires": DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL if premiere else None,
+            "jours_minimum": DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL if premiere else 1,
+            "jours_maximum": DUREE_MAX_TRANCHE_CONGE_ANNUEL,
+            "historique_incoherent": etat["historique_incoherent"],
+            "message_historique": etat["message_historique"],
+            "nombre_tranches_existantes": etat["nombre_tranches_existantes"],
+            "message": (
+                etat["message_historique"]
+                if etat["historique_incoherent"]
+                else (
+                    f"La première tranche doit être exactement de {DUREE_PREMIERE_TRANCHE_CONGE_ANNUEL} jours calendaires."
+                    if premiere
+                    else f"Les tranches suivantes peuvent durer de 1 à {DUREE_MAX_TRANCHE_CONGE_ANNUEL} jours calendaires, selon le solde disponible."
+                )
+            ),
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def annuler(self, request, pk=None):
@@ -460,6 +569,9 @@ class AValiderViewSet(viewsets.ViewSet):
 class DecisionCongeViewSet(viewsets.ModelViewSet):
     """Décisions annuelles : consultation et gestion réservées à la RH/admin."""
 
+    # Valeur par défaut nécessaire au routeur DRF ; l’action scan surcharge ce scope avec "ocr_scan".
+    throttle_scope = "user"
+
     queryset = DecisionConge.objects.select_related("personnel", "direction")
     serializer_class = DecisionCongeSerializer
     # Les décisions contiennent des données administratives individuelles.
@@ -521,7 +633,14 @@ class DecisionCongeViewSet(viewsets.ModelViewSet):
             "message": "Report des reliquats effectué.",
         }, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["post"], permission_classes=[EstRH], url_path="scan")
+    @action(
+        detail=False,
+        methods=["post"],
+        permission_classes=[EstRH],
+        url_path="scan",
+        throttle_classes=[ScopedRateThrottle],
+        throttle_scope="ocr_scan",
+    )
     def scan(self, request):
         """Extrait par OCR les données d'un scan de décision, sans rien enregistrer.
 
@@ -538,21 +657,71 @@ class DecisionCongeViewSet(viewsets.ModelViewSet):
         extrait = extraire_donnees_decision(corps.validated_data["fichier"])
 
         agent = None
-        if extrait.get("im"):
-            from personnels.models import Personnel
-            from personnels.serializers import PersonnelSerializer
+        from personnels.models import Personnel
+        from personnels.serializers import PersonnelSerializer
 
-            # L'IM est enregistré avec ou sans espaces/points selon la saisie : on compare
-            # donc les chiffres seuls des deux côtés.
+        trouve = None
+        if extrait.get("im"):
+            # L'IM peut être écrit avec espaces ou points dans les anciens dossiers.
+            # Il reste le critère prioritaire, car il est plus fiable qu'un nom OCR.
             trouve = (
-                Personnel.objects.annotate(
-                    im_chiffres=Replace(Replace("im", Value(" "), Value("")), Value("."), Value(""))
+                Personnel.objects.select_related("direction", "service")
+                .annotate(
+                    im_chiffres=Replace(
+                        Replace(Replace("im", Value(" "), Value("")), Value("."), Value("")),
+                        Value("-"), Value(""),
+                    )
                 )
                 .filter(im_chiffres=extrait["im"])
                 .first()
             )
-            if trouve is not None:
-                agent = PersonnelSerializer(trouve).data
+
+        if trouve is None and extrait.get("agent_concerne"):
+            # Repli prudent : un nom n'est utilisé que si la correspondance normalisée
+            # est exacte et unique. Aucun agent n'est sélectionné sur une ressemblance partielle.
+            import re
+            import unicodedata
+            from django.db.models import Q
+
+            def normaliser_nom_ocr(valeur):
+                valeur = unicodedata.normalize("NFKD", valeur or "")
+                valeur = "".join(c for c in valeur if not unicodedata.combining(c))
+                return re.sub(r"[^A-Z0-9]+", " ", valeur.upper()).strip()
+
+            nom_ocr = normaliser_nom_ocr(extrait["agent_concerne"])
+            tokens = nom_ocr.split()
+            if nom_ocr and tokens:
+                premier = tokens[0]
+                candidats = Personnel.objects.select_related("direction", "service").filter(
+                    Q(nom__icontains=premier) | Q(prenoms__icontains=premier)
+                )[:100]
+                correspondances = []
+                for candidat in candidats:
+                    noms_possibles = {
+                        normaliser_nom_ocr(f"{candidat.nom} {candidat.prenoms}"),
+                        normaliser_nom_ocr(f"{candidat.prenoms} {candidat.nom}"),
+                    }
+                    if nom_ocr in noms_possibles:
+                        correspondances.append(candidat)
+                if len(correspondances) == 1:
+                    trouve = correspondances[0]
+
+        if trouve is not None:
+            agent = PersonnelSerializer(trouve).data
+            # Ces deux champs viennent de manière plus fiable du dossier agent que de l'OCR.
+            manquants_complementaires = extrait.get("champs_complementaires_manquants", [])
+            extrait["champs_complementaires_manquants"] = [
+                champ for champ in manquants_complementaires
+                if not champ.startswith(("agent concerné", "corps / grade"))
+            ]
+        elif extrait.get("agent_concerne"):
+            avertissement = (
+                "Le nom du personnel a été extrait, mais ne correspond pas exactement à un agent unique. "
+                "Sélectionnez l’agent dans la liste avant l’enregistrement."
+            )
+            avertissements = extrait.setdefault("avertissements", [])
+            if avertissement not in avertissements:
+                avertissements.append(avertissement)
 
         numero = extrait.get("numero_decision")
         return Response(

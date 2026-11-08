@@ -21,7 +21,7 @@ const LIBELLES_ROLES: Record<string, string> = {
   ROLE_ADMIN: 'Administrateur',
 }
 
-export type VueRH = 'apercu' | 'decisions' | 'reports'
+export type VueRH = 'apercu' | 'decisions' | 'formulaires' | 'reports' | 'demande-agent'
 export type VueAgent =
   | 'apercu'
   | 'demandes'
@@ -411,7 +411,9 @@ function Coquille<V extends string>({
 
 const NAV_RH: ElementNav<VueRH>[] = [
   { cle: 'apercu', libelle: 'Vue d’ensemble RH', icone: 'building' },
+  { cle: 'formulaires', libelle: 'Formulaires officiels', icone: 'file' },
   { cle: 'decisions', libelle: 'Décisions RH', icone: 'file' },
+  { cle: 'demande-agent', id: 'rh-demande-agent', libelle: 'Demande pour un agent', icone: 'plus', chemin: '/app/rh/nouvelle-demande' },
   { cle: 'reports', libelle: 'Report des reliquats', icone: 'refresh' },
   { cle: 'apercu', id: 'rh-espace-service', libelle: 'Mon service — Vue d’ensemble', icone: 'building', chemin: '/app/chef-service' },
   { cle: 'decisions', id: 'rh-service-equipe', libelle: 'Mon service — Équipe', icone: 'users', chemin: '/app/chef-service/personnel' },

@@ -33,7 +33,15 @@ REST_FRAMEWORK = {  # noqa: F405
     **REST_FRAMEWORK,  # noqa: F405
     "DEFAULT_THROTTLE_CLASSES": (),
     # Une limite à None désactive aussi les limites déclarées par une vue (ex. : connexion).
-    "DEFAULT_THROTTLE_RATES": {"anon": None, "user": None, "connexion": None},
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": None,
+        "user": None,
+        "connexion_minute": None,
+        "connexion_heure": None,
+        "session_refresh": None,
+        "ocr_scan": None,
+        "connexion": None,
+    },
 }
 
 # Les médias de test ne doivent pas polluer le dossier media/ du projet.

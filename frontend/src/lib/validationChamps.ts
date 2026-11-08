@@ -88,3 +88,21 @@ export const MESSAGE_IM = 'L’IM doit contenir exactement 6 chiffres.'
 export const MESSAGE_CIN = 'La CIN doit contenir exactement 12 chiffres.'
 export const MESSAGE_NOM = 'Utilisez uniquement des lettres, espaces, apostrophes ou traits d’union.'
 export const MESSAGE_EMAIL_GMAIL = 'L’adresse doit se terminer par @gmail.com.'
+
+/** Libellé administratif (corps/grade) : garde lettres, chiffres et ponctuation usuelle. */
+export function normaliserLibelleAdministratif(valeur: string, longueurMax = 100): string {
+  return valeur
+    .replace(/[^\p{L}\p{N}\s'’()\-./]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .slice(0, longueurMax)
+}
+
+export function libelleAdministratifValide(valeur: string): boolean {
+  const texte = valeur.trim()
+  return texte.length > 0 && /\p{L}/u.test(texte) && /^[\p{L}\p{N}\s'’()\-./]+$/u.test(texte)
+}
+
+export const MESSAGE_TELEPHONE = 'Saisissez un numéro de téléphone valide (8 à 15 chiffres).'
+export const MESSAGE_EMAIL = 'Saisissez une adresse e-mail valide.'
+export const MESSAGE_DATE_NAISSANCE = 'La date de naissance doit être valide et ne pas être dans le futur.'
+export const MESSAGE_LIBELLE_ADMIN = 'Saisissez un libellé valide avec des lettres et, si nécessaire, des chiffres, espaces, tirets ou points.'

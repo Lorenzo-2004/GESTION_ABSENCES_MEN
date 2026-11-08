@@ -1,22 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
-import { Link, Navigate, useLocation, useSearchParams } from 'react-router'
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router'
 
 import { useAuth } from '../../contexts/useAuth'
 import { peutAccederEspaceAgent } from '../../lib/roles'
 import { typePossedeFicheOfficielle } from '../../services/congesService'
 import {
   creerDemandeConge,
+  recupererRegleTrancheAnnuelle,
+  type RegleTrancheAnnuelle,
   type TypeAbsence,
 } from '../../services/nouvelleDemandeService'
 import {
   listerPersonnelsDuService,
   type PersonnelEquipe,
 } from '../../services/chefServiceService'
+import { listerPersonnelsRH } from '../../services/rhDecisionsService'
 import { Icon, Message, type IconName } from '../../components/men/ui'
 import { delai } from '../../components/men/ui-outils'
 import {
   CoquilleAgent,
+  CoquilleRH,
   CoquilleService,
   type VueAgent,
 } from '../../components/men/miseEnPageRH'
@@ -46,6 +50,8 @@ function typesAbsenceSelonProfil(statut?: string | null, sexe?: string | null) {
 
 const EXTENSIONS_AUTORISEES = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff']
 const TAILLE_MAXIMALE = 15 * 1024 * 1024
+const JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL = 15
+const JOURS_MAX_TRANCHE_CONGE_ANNUEL = 15
 
 /* ------------------------------------------------------------------ */
 /*  Animations                                                         */
@@ -211,10 +217,25 @@ function initialiserFormulaire(): FormulaireDemande {
 /* ------------------------------------------------------------------ */
 
 function CoquilleDemandeRole({
-  dansEspaceService, vueAgent, onVueAgent, titre, description, actions, children,
+  dansEspaceService, dansEspaceRH, vueAgent, onVueAgent, titre, description, actions, children,
 }: {
-  dansEspaceService: boolean; vueAgent: VueAgent; onVueAgent: (vue: VueAgent) => void; titre: string; description: string; actions: ReactNode; children: ReactNode
+  dansEspaceService: boolean; dansEspaceRH: boolean; vueAgent: VueAgent; onVueAgent: (vue: VueAgent) => void; titre: string; description: string; actions: ReactNode; children: ReactNode
 }) {
+  const naviguer = useNavigate()
+
+  if (dansEspaceRH) {
+    return (
+      <CoquilleRH
+        vue="demande-agent"
+        onVue={(vue) => naviguer(vue === 'demande-agent' ? '/app/rh/nouvelle-demande' : '/app/rh')}
+        titre={titre}
+        description={description}
+        actions={actions}
+      >
+        {children}
+      </CoquilleRH>
+    )
+  }
   if (dansEspaceService) {
     return (
       <CoquilleService vue="nouvelle-demande" onVue={() => undefined} titre={titre} description={description} actions={actions}>
@@ -277,13 +298,15 @@ function TuileKpi({ libelle, valeur, note, icone, accent, retard }: {
 
 export function NouvelleDemandePage() {
   const { utilisateur, chargement } = useAuth()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { pathname } = useLocation()
   const personnelCibleId = Number(searchParams.get('personnel') || 0)
   const dansEspaceService = pathname.startsWith('/app/chef-service')
+  const estEspaceRHDelegue = pathname === '/app/rh/nouvelle-demande' && utilisateur?.role === 'ROLE_RH'
+  const dansContexteSaisieDeleguee = dansEspaceService || estEspaceRHDelegue
   const estResponsableService = utilisateur?.role === 'ROLE_CHEF_SERVICE' || utilisateur?.role === 'ROLE_RH'
   const serviceId = utilisateur?.personnel?.service ?? null
-  const demandePourUnAgent = dansEspaceService && estResponsableService && personnelCibleId > 0
+  const demandePourUnAgent = dansContexteSaisieDeleguee && estResponsableService && personnelCibleId > 0
   const [vue, setVue] = useState<VueAgent>('nouvelle-demande')
 
   const [formulaire, setFormulaire] = useState<FormulaireDemande>(initialiserFormulaire)
@@ -291,8 +314,16 @@ export function NouvelleDemandePage() {
   const [erreur, setErreur] = useState('')
   const [succes, setSucces] = useState('')
   const [envoiEnCours, setEnvoiEnCours] = useState(false)
+  const [regleTrancheAnnuelle, setRegleTrancheAnnuelle] = useState<RegleTrancheAnnuelle | null>(null)
+  const [chargementRegleTranche, setChargementRegleTranche] = useState(false)
+  const [erreurRegleTranche, setErreurRegleTranche] = useState('')
+  const [revisionRegleTranche, setRevisionRegleTranche] = useState(0)
   const [personnelCible, setPersonnelCible] = useState<PersonnelEquipe | null>(null)
   const [chargementPersonnelCible, setChargementPersonnelCible] = useState(false)
+  const [personnelsDisponibles, setPersonnelsDisponibles] = useState<PersonnelEquipe[]>([])
+  const [chargementListePersonnels, setChargementListePersonnels] = useState(false)
+  const [erreurListePersonnels, setErreurListePersonnels] = useState('')
+  const [rechercheAgent, setRechercheAgent] = useState('')
   const [signatureTracee, setSignatureTracee] = useState(false)
   const [confirmationSignatureDeleguee, setConfirmationSignatureDeleguee] = useState(false)
   const signatureCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -305,43 +336,104 @@ export function NouvelleDemandePage() {
 
   const referenceFichier = useRef<HTMLInputElement>(null)
   const personnelConcerne = demandePourUnAgent ? personnelCible : utilisateur?.personnel
+  const personnelRegleId = demandePourUnAgent
+    ? personnelCible?.id_personnel ?? null
+    : utilisateur?.personnel?.id_personnel ?? null
   const typesAbsenceDisponibles = typesAbsenceSelonProfil(personnelConcerne?.statut, personnelConcerne?.sexe)
 
   useEffect(() => {
-    if (!dansEspaceService || !estResponsableService || personnelCibleId <= 0) {
-      setPersonnelCible(null)
-      setChargementPersonnelCible(false)
+    if (!dansContexteSaisieDeleguee || !estResponsableService) {
+      setPersonnelsDisponibles([])
+      setChargementListePersonnels(false)
+      setErreurListePersonnels('')
       return
     }
-    if (serviceId === null) {
-      setPersonnelCible(null)
-      setChargementPersonnelCible(false)
-      setErreur('Votre compte n’est associé à aucun service.')
-      return
-    }
-    let actif = true
-    setChargementPersonnelCible(true)
-    setPersonnelCible(null)
-    setErreur('')
 
-    void listerPersonnelsDuService(serviceId)
+    if (!estEspaceRHDelegue && serviceId === null) {
+      setPersonnelsDisponibles([])
+      setChargementListePersonnels(false)
+      setErreurListePersonnels('Votre compte n’est associé à aucun service.')
+      return
+    }
+
+    let actif = true
+    setChargementListePersonnels(true)
+    setErreurListePersonnels('')
+
+    const chargerListe = estEspaceRHDelegue
+      ? listerPersonnelsRH().then((resultat) => resultat.elements.map((personnel) => ({
+          id_personnel: personnel.id_personnel,
+          im: personnel.im,
+          nom: personnel.nom,
+          prenoms: personnel.prenoms,
+          nom_complet: personnel.nom_complet || [personnel.prenoms, personnel.nom].filter(Boolean).join(' '),
+          corps: personnel.corps || '',
+          grade: personnel.grade || '',
+          sexe: (personnel as typeof personnel & { sexe?: string }).sexe,
+          statut: personnel.statut,
+          service: personnel.service ?? null,
+          service_libelle: personnel.service_libelle ?? null,
+        })))
+      : listerPersonnelsDuService(serviceId as number)
+
+    void chargerListe
       .then((personnels) => {
-        if (!actif) return
-        const cible = personnels.find((personnel) => personnel.id_personnel === personnelCibleId)
-        if (!cible) {
-          setPersonnelCible(null)
-          setErreur('Ce personnel n’appartient pas à votre service ou n’est pas disponible.')
-          return
-        }
-        setPersonnelCible(cible)
+        if (actif) setPersonnelsDisponibles(personnels)
       })
       .catch((cause) => {
-        if (actif) { setPersonnelCible(null); setErreur(messageErreur(cause)) }
+        if (actif) {
+          setPersonnelsDisponibles([])
+          setErreurListePersonnels(messageErreur(cause))
+        }
       })
-      .finally(() => { if (actif) setChargementPersonnelCible(false) })
+      .finally(() => { if (actif) setChargementListePersonnels(false) })
 
     return () => { actif = false }
-  }, [dansEspaceService, estResponsableService, personnelCibleId, serviceId])
+  }, [dansContexteSaisieDeleguee, estResponsableService, estEspaceRHDelegue, serviceId])
+
+  useEffect(() => {
+    if (!dansContexteSaisieDeleguee || !estResponsableService || personnelCibleId <= 0) {
+      setPersonnelCible(null)
+      setChargementPersonnelCible(false)
+      return
+    }
+
+    if (chargementListePersonnels) {
+      setChargementPersonnelCible(true)
+      return
+    }
+
+    setChargementPersonnelCible(false)
+    if (erreurListePersonnels) {
+      setPersonnelCible(null)
+      setErreur(erreurListePersonnels)
+      return
+    }
+
+    const cible = personnelsDisponibles.find((personnel) =>
+      personnel.id_personnel === personnelCibleId
+      && personnel.id_personnel !== utilisateur?.personnel?.id_personnel,
+    )
+    if (!cible) {
+      setPersonnelCible(null)
+      setErreur(estEspaceRHDelegue
+        ? 'Cet agent est introuvable ou n’est pas disponible dans la liste RH.'
+        : 'Ce personnel n’appartient pas à votre service ou n’est pas disponible.')
+      return
+    }
+
+    setErreur('')
+    setPersonnelCible(cible)
+  }, [
+    dansContexteSaisieDeleguee,
+    estResponsableService,
+    estEspaceRHDelegue,
+    personnelCibleId,
+    personnelsDisponibles,
+    chargementListePersonnels,
+    erreurListePersonnels,
+    utilisateur?.personnel?.id_personnel,
+  ])
 
   useEffect(() => {
     const typesAutorises = typesAbsenceSelonProfil(personnelConcerne?.statut, personnelConcerne?.sexe)
@@ -358,6 +450,75 @@ export function NouvelleDemandePage() {
       }
     })
   }, [personnelConcerne?.id_personnel, personnelConcerne?.statut, personnelConcerne?.sexe])
+
+  useEffect(() => {
+    if (dansContexteSaisieDeleguee && !demandePourUnAgent) {
+      setRegleTrancheAnnuelle(null)
+      setChargementRegleTranche(false)
+      setErreurRegleTranche('')
+      return
+    }
+
+    if (formulaire.type_absence !== 'CONGE_ANNUEL') {
+      setRegleTrancheAnnuelle(null)
+      setChargementRegleTranche(false)
+      setErreurRegleTranche('')
+      return
+    }
+
+    const anneeTitre = Number(formulaire.annee_titre)
+    if (!formulaire.annee_titre.trim() || !Number.isInteger(anneeTitre) || anneeTitre < 1900 || anneeTitre > 9999) {
+      setRegleTrancheAnnuelle(null)
+      setChargementRegleTranche(false)
+      setErreurRegleTranche('')
+      return
+    }
+    if (demandePourUnAgent && personnelRegleId === null) {
+      setRegleTrancheAnnuelle(null)
+      setChargementRegleTranche(false)
+      setErreurRegleTranche('')
+      return
+    }
+
+    let actif = true
+    setRegleTrancheAnnuelle(null)
+    setChargementRegleTranche(true)
+    setErreurRegleTranche('')
+    void recupererRegleTrancheAnnuelle(
+      anneeTitre,
+      demandePourUnAgent ? (personnelRegleId ?? undefined) : undefined,
+    )
+      .then((regle) => {
+        if (!actif) return
+        setRegleTrancheAnnuelle(regle)
+        // Si l'agent a déjà choisi sa date de début pendant le chargement,
+        // aligne immédiatement la première tranche sur 15 jours calendaires.
+        if (regle.premiere_tranche) {
+          setFormulaire((precedent) => {
+            if (precedent.type_absence !== 'CONGE_ANNUEL' || !precedent.date_debut) return precedent
+            const finObligatoire = ajouterJoursISO(precedent.date_debut, 14)
+            return precedent.date_fin === finObligatoire
+              ? precedent
+              : { ...precedent, date_fin: finObligatoire }
+          })
+        }
+      })
+      .catch(() => {
+        if (actif) setErreurRegleTranche('Impossible de vérifier les tranches de congé annuel. Réessayez avant de soumettre.')
+      })
+      .finally(() => {
+        if (actif) setChargementRegleTranche(false)
+      })
+
+    return () => { actif = false }
+  }, [
+    formulaire.type_absence,
+    formulaire.annee_titre,
+    demandePourUnAgent,
+    dansContexteSaisieDeleguee,
+    personnelRegleId,
+    revisionRegleTranche,
+  ])
 
   useEffect(() => {
     if (!motifAutomatiquePourType(formulaire.type_absence)) return
@@ -377,7 +538,24 @@ export function NouvelleDemandePage() {
 
   if (!utilisateur) return <Navigate to="/connexion" replace />
   if (!peutAccederEspaceAgent(utilisateur.role)) return <Navigate to="/app" replace />
+  if (pathname.startsWith('/app/rh/nouvelle-demande') && utilisateur.role !== 'ROLE_RH') return <Navigate to="/app" replace />
+  if (dansEspaceService && !['ROLE_CHEF_SERVICE', 'ROLE_RH'].includes(utilisateur.role)) return <Navigate to="/app" replace />
 
+  const personnelsAffectables = personnelsDisponibles.filter(
+    (personnel) => personnel.id_personnel !== utilisateur?.personnel?.id_personnel,
+  )
+  const personnelsFiltres = personnelsAffectables.filter((personnel) => {
+    const recherche = rechercheAgent.trim().toLocaleLowerCase('fr-FR')
+    if (!recherche) return true
+    const texte = [personnel.nom_complet, personnel.im, personnel.service_libelle, personnel.corps, personnel.grade]
+      .filter(Boolean)
+      .join(' ')
+      .toLocaleLowerCase('fr-FR')
+    return texte.includes(recherche)
+  })
+  const personnelsOptions = personnelCibleId > 0 && !personnelsFiltres.some((personnel) => personnel.id_personnel === personnelCibleId)
+    ? [...personnelsAffectables.filter((personnel) => personnel.id_personnel === personnelCibleId), ...personnelsFiltres]
+    : personnelsFiltres
   const congeFamilial = formulaire.type_absence === 'MATERNITE' || formulaire.type_absence === 'PATERNITE'
   const ficheOfficielleNecessaire = typePossedeFicheOfficielle(formulaire.type_absence)
   const dureeFamiliale = formulaire.type_absence === 'MATERNITE' ? 90 : formulaire.type_absence === 'PATERNITE' ? 15 : null
@@ -406,6 +584,27 @@ export function NouvelleDemandePage() {
         ...precedent,
         type_absence: type,
         motif: motifAutomatiquePourType(type) ? libelleTypeAbsence(type) : '',
+      }))
+      setErreur('')
+      setSucces('')
+      if (type !== 'CONGE_ANNUEL') {
+        setRegleTrancheAnnuelle(null)
+        setErreurRegleTranche('')
+      }
+      return
+    }
+
+    if (
+      cle === 'date_debut'
+      && formulaire.type_absence === 'CONGE_ANNUEL'
+      && regleTrancheAnnuelle?.premiere_tranche
+      && typeof valeur === 'string'
+      && valeur
+    ) {
+      setFormulaire((precedent) => ({
+        ...precedent,
+        date_debut: valeur,
+        date_fin: ajouterJoursISO(valeur, JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL - 1),
       }))
       setErreur('')
       setSucces('')
@@ -597,6 +796,28 @@ export function NouvelleDemandePage() {
       setErreur('Vérifiez les dates de début et de fin.')
       return
     }
+    if (formulaire.type_absence === 'CONGE_ANNUEL') {
+      if (chargementRegleTranche || !regleTrancheAnnuelle || erreurRegleTranche) {
+        setErreur(erreurRegleTranche || 'La règle de tranche du congé annuel est en cours de vérification. Réessayez dans un instant.')
+        return
+      }
+      if (regleTrancheAnnuelle.annee_titre !== Number(formulaire.annee_titre)) {
+        setErreur('La règle de tranche ne correspond pas à l’année de titre choisie. Réessayez.')
+        return
+      }
+      if (regleTrancheAnnuelle.historique_incoherent) {
+        setErreur(regleTrancheAnnuelle.message_historique || 'Une ancienne tranche ne respecte pas la règle. La RH doit régulariser le dossier avant une nouvelle demande pour cette année.')
+        return
+      }
+      if (regleTrancheAnnuelle.premiere_tranche && nombreJours !== JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL) {
+        setErreur(`La première tranche du congé annuel doit être exactement de ${JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL} jours calendaires. La date de fin doit être ${JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL - 1} jours après la date de début.`)
+        return
+      }
+      if (!regleTrancheAnnuelle.premiere_tranche && (nombreJours === null || nombreJours < 1 || nombreJours > JOURS_MAX_TRANCHE_CONGE_ANNUEL)) {
+        setErreur(`Chaque tranche suivante doit durer de 1 à ${JOURS_MAX_TRANCHE_CONGE_ANNUEL} jours calendaires et respecter le solde disponible.`)
+        return
+      }
+    }
     const delaiAvantDebut = joursEntreISO(dateDuJour, formulaire.date_debut)
     if (formulaire.type_absence === 'CONGE_ANNUEL' && (delaiAvantDebut === null || delaiAvantDebut < 14 || delaiAvantDebut > 30)) {
       setErreur(`Le congé annuel doit être déposé entre 14 et 30 jours avant sa date de début. Choisissez une date entre le ${afficherDateISO(debutCongeAnnuelMin)} et le ${afficherDateISO(debutCongeAnnuelMax)}.`)
@@ -693,6 +914,7 @@ export function NouvelleDemandePage() {
       setSucces(`${sujetDemande} a bien été signée et envoyée. Référence : ${reference}. État : ${resultat.statut_libelle || 'En attente'}.`)
 
       setFormulaire(initialiserFormulaire())
+      setRevisionRegleTranche((precedente) => precedente + 1)
       setFichier(null)
       const canvasSignature = signatureCanvasRef.current
       const contexteSignature = canvasSignature?.getContext('2d')
@@ -722,37 +944,54 @@ export function NouvelleDemandePage() {
     return Number.isNaN(debut.getTime()) || Number.isNaN(fin.getTime()) || fin < debut
   }
 
+  const cheminRetour = estEspaceRHDelegue
+    ? '/app/rh'
+    : dansEspaceService
+      ? '/app/chef-service'
+      : '/app/agent/mes-demandes'
+  const cheminSucces = estEspaceRHDelegue
+    ? '/app/rh'
+    : dansEspaceService
+      ? '/app/chef-service/planning'
+      : '/app/agent/mes-demandes'
+  const libelleRetour = estEspaceRHDelegue
+    ? 'Retour à la RH'
+    : dansEspaceService
+      ? 'Retour au service'
+      : 'Mes demandes'
+
   return (
     <CoquilleDemandeRole
       dansEspaceService={dansEspaceService}
+      dansEspaceRH={estEspaceRHDelegue}
       vueAgent={vue}
       onVueAgent={setVue}
       titre={
-        dansEspaceService
-          ? demandePourUnAgent && personnelCible
-            ? `Demande pour ${personnelCible.nom_complet}`
+        demandePourUnAgent && personnelCible
+          ? `Demande pour ${personnelCible.nom_complet}`
+          : dansContexteSaisieDeleguee
+            ? 'Demande pour un agent'
             : 'Nouvelle demande'
-          : 'Nouvelle demande'
       }
       description={
-        ficheOfficielleNecessaire
-          ? dansEspaceService
-            ? demandePourUnAgent
-              ? 'Saisie d’une demande officielle pour un membre de votre service'
-              : 'Demande personnelle transmise directement à la direction'
-            : estResponsableService
+        dansContexteSaisieDeleguee
+          ? demandePourUnAgent
+            ? estEspaceRHDelegue
+              ? 'Préparer une demande pour un agent du ministère'
+              : 'Saisie d’une demande pour un membre de votre service'
+            : estEspaceRHDelegue
+              ? 'Sélectionnez un agent du ministère avant de remplir sa demande.'
+              : 'Sélectionnez un membre de votre service avant de remplir sa demande.'
+          : ficheOfficielleNecessaire
+            ? estResponsableService
               ? 'Déposez votre demande officielle ; elle sera transmise directement au Directeur.'
               : 'Complétez la fiche officielle pour le congé annuel, la permission ou l’autorisation d’absence.'
-          : demandePourUnAgent
-            ? 'Saisie d’une annonce pour un membre de votre service ; aucune fiche officielle n’est requise.'
-            : dansEspaceService
-              ? 'Votre annonce personnelle sera transmise directement au Directeur, sans fiche officielle.'
-              : 'Déclarez votre absence ou votre événement ; aucune fiche officielle n’est requise pour ce type.'
+            : 'Déclarez votre absence ou votre événement ; aucune fiche officielle n’est requise pour ce type.'
       }
       actions={
-        <Link to={dansEspaceService ? '/app/chef-service' : '/app/agent/mes-demandes'} className={`${btnContour} !h-9`}>
+        <Link to={cheminRetour} className={`${btnContour} !h-9`}>
           <Icon name="left" className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{dansEspaceService ? 'Retour au service' : 'Mes demandes'}</span>
+          <span className="hidden sm:inline">{libelleRetour}</span>
         </Link>
       }
     >
@@ -763,13 +1002,85 @@ export function NouvelleDemandePage() {
         {succes && (
           <Message key={succes} type="succes" onClose={() => setSucces('')}>
             <span className="text-xs">{succes}</span>
-            <Link to={dansEspaceService ? '/app/chef-service/planning' : '/app/agent/mes-demandes'} className="mt-2 flex items-center gap-1 text-xs font-semibold underline">
+            <Link to={cheminSucces} className="mt-2 flex items-center gap-1 text-xs font-semibold underline">
               <Icon name="right" className="h-3 w-3" />
-              {dansEspaceService ? 'Consulter le planning' : 'Mes demandes'}
+              {estEspaceRHDelegue ? 'Retour à la RH' : dansEspaceService ? 'Consulter le planning' : 'Mes demandes'}
             </Link>
           </Message>
         )}
 
+        {dansContexteSaisieDeleguee && (
+          <section className={`rh-in overflow-hidden ${carte}`} style={delai(160)}>
+            <header className="flex items-center gap-3 border-b border-[#E5E5EA] bg-[#F0F0FF] px-5 py-3">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#1B1BFF]/10 text-[#1B1BFF]">
+                <Icon name="users" className="h-4 w-4" />
+              </span>
+              <div>
+                <p className="text-sm font-bold text-[#0A0A0A]">{estEspaceRHDelegue ? 'Agent concerné' : 'Personnel concerné'}</p>
+                <p className="mt-0.5 text-xs text-[#5D5D66]">
+                  {estEspaceRHDelegue
+                    ? 'Recherchez un agent du ministère ; le formulaire et les règles sont identiques à ceux du chef de service.'
+                    : 'Choisissez un membre de votre service pour préparer sa demande avec les mêmes règles de saisie.'}
+                </p>
+              </div>
+            </header>
+            <div className="grid gap-4 p-4 sm:grid-cols-[minmax(0,1fr)_minmax(220px,1fr)] sm:p-5">
+              <div>
+                <label htmlFor="recherche-agent-delegue" className={etiquette}>Rechercher par nom, IM ou service</label>
+                <input
+                  id="recherche-agent-delegue"
+                  type="search"
+                  value={rechercheAgent}
+                  onChange={(event) => setRechercheAgent(event.target.value)}
+                  placeholder="Ex. : nom, IM, service…"
+                  className={champ}
+                />
+              </div>
+              <div>
+                <label htmlFor="agent-cible-delegue" className={etiquette}>Sélectionner l’agent *</label>
+                <select
+                  id="agent-cible-delegue"
+                  value={personnelCibleId > 0 ? String(personnelCibleId) : ''}
+                  onChange={(event) => {
+                    setErreur('')
+                    setSucces('')
+                    setFormulaire(initialiserFormulaire())
+                    setFichier(null)
+                    setRegleTrancheAnnuelle(null)
+                    setErreurRegleTranche('')
+                    setConfirmationSignatureDeleguee(false)
+                    effacerSignature()
+                    if (referenceFichier.current) referenceFichier.current.value = ''
+                    setSearchParams(event.target.value ? { personnel: event.target.value } : {}, { replace: true })
+                  }}
+                  disabled={chargementListePersonnels || Boolean(erreurListePersonnels)}
+                  className={champ}
+                >
+                  <option value="">{chargementListePersonnels ? 'Chargement des agents…' : 'Choisir un agent'}</option>
+                  {personnelsOptions.map((personnel) => (
+                    <option key={personnel.id_personnel} value={String(personnel.id_personnel)}>
+                      {personnel.nom_complet || `${personnel.prenoms} ${personnel.nom}`} — IM {personnel.im}{personnel.service_libelle ? ` · ${personnel.service_libelle}` : ''}
+                    </option>
+                  ))}
+                </select>
+                {erreurListePersonnels && <p className="mt-2 text-xs font-medium text-rose-700" role="alert">Impossible de charger les agents : {erreurListePersonnels}</p>}
+                {!chargementListePersonnels && !erreurListePersonnels && personnelsOptions.length === 0 && (
+                  <p className="mt-2 text-xs text-[#5D5D66]">Aucun agent ne correspond à cette recherche.</p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {dansContexteSaisieDeleguee && demandePourUnAgent && chargementPersonnelCible && (
+          <section className="rounded-2xl border border-[#E5E5EA] bg-white p-5 text-sm text-[#5D5D66]" role="status">
+            Chargement du dossier de l’agent sélectionné…
+          </section>
+        )}
+
+
+        {(!dansContexteSaisieDeleguee || (demandePourUnAgent && Boolean(personnelCible) && !chargementPersonnelCible)) && (
+          <>
         <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
           <section className="rh-in rh-sheen relative min-w-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#1B1BFF] via-[#1B1BFF] to-[#1B1BFF] p-6 text-white shadow-[0_20px_38px_-20px_rgba(10,61,92,.75)] sm:p-8">
             <svg aria-hidden="true" viewBox="0 0 400 400" className="pointer-events-none absolute -right-24 -top-28 h-[420px] w-[420px] text-white">
@@ -784,10 +1095,10 @@ export function NouvelleDemandePage() {
             <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-[0.05] [background-image:linear-gradient(white_1px,transparent_1px),linear-gradient(90deg,white_1px,transparent_1px)] [background-size:36px_36px]" />
 
             <div className="relative flex h-full min-w-0 flex-col">
-              {dansEspaceService && (
+              {dansContexteSaisieDeleguee && (
                 <p className="inline-flex w-fit items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
                   <Icon name="file" className="h-3.5 w-3.5" />
-                  {utilisateur.role === 'ROLE_RH' ? 'Espace Service RH' : 'Espace Chef de service'}
+                  {estEspaceRHDelegue ? 'Espace RH · Saisie déléguée' : utilisateur.role === 'ROLE_RH' ? 'Espace Service RH' : 'Espace Chef de service'}
                 </p>
               )}
               <h2 className="men-serif mt-5 max-w-lg text-3xl font-normal leading-[1.1] sm:text-4xl">
@@ -795,12 +1106,14 @@ export function NouvelleDemandePage() {
               </h2>
               <p className="mt-4 max-w-md text-sm leading-relaxed text-white/75">
                 {demandePourUnAgent
-                  ? 'Préparez la demande d’absence pour le personnel sélectionné.'
+                  ? estEspaceRHDelegue
+                    ? 'Préparez la demande pour l’agent sélectionné ; les mêmes règles de saisie que pour le chef de service sont appliquées.'
+                    : 'Préparez la demande d’absence pour le personnel sélectionné.'
                   : dansEspaceService
                     ? 'Votre demande personnelle sera transmise directement au Directeur.'
                     : estResponsableService
-                    ? 'Votre demande personnelle sera transmise directement au Directeur.'
-                    : 'Renseignez les informations utiles puis soumettez la demande.'}
+                      ? 'Votre demande personnelle sera transmise directement au Directeur.'
+                      : 'Renseignez les informations utiles puis soumettez la demande.'}
               </p>
             </div>
           </section>
@@ -886,6 +1199,25 @@ export function NouvelleDemandePage() {
                   <p className="mt-1.5 text-xs font-medium text-[#86868B]">
                     Choisissez l’année de droits à utiliser. La demande sera vérifiée selon la décision RH et le solde disponibles pour cette année.
                   </p>
+                  {chargementRegleTranche && (
+                    <p className="mt-2 text-xs text-[#52525B]" role="status">Vérification de la tranche de congé annuel…</p>
+                  )}
+                  {erreurRegleTranche && (
+                    <p className="mt-2 text-xs font-medium text-red-700" role="alert">{erreurRegleTranche}</p>
+                  )}
+                  {!chargementRegleTranche && regleTrancheAnnuelle && (
+                    regleTrancheAnnuelle.historique_incoherent ? (
+                      <p className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium leading-5 text-red-800" role="alert">
+                        {regleTrancheAnnuelle.message_historique || 'Une ancienne tranche ne respecte pas la règle. La RH doit régulariser le dossier avant une nouvelle demande pour cette année.'}
+                      </p>
+                    ) : (
+                      <p className="mt-2 rounded-lg border border-[#D9D9FF] bg-[#F0F0FF] p-3 text-xs font-medium leading-5 text-[#1B1BFF]" role="status">
+                        {regleTrancheAnnuelle.premiere_tranche
+                          ? `Première tranche : ${JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL} jours calendaires obligatoires. Après avoir choisi la date de début, la date de fin est proposée automatiquement à J+${JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL - 1}.`
+                          : `Tranche suivante : choisissez de 1 à ${JOURS_MAX_TRANCHE_CONGE_ANNUEL} jours calendaires, selon votre solde disponible.`}
+                      </p>
+                    )
+                  )}
                 </div>
               )}
 
@@ -971,11 +1303,23 @@ export function NouvelleDemandePage() {
                       id="date_fin"
                       type="date"
                       required
-                      min={formulaire.date_debut || undefined}
+                      min={formulaire.type_absence === 'CONGE_ANNUEL' && regleTrancheAnnuelle?.premiere_tranche && formulaire.date_debut
+                        ? ajouterJoursISO(formulaire.date_debut, JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL - 1)
+                        : formulaire.date_debut || undefined}
+                      max={formulaire.type_absence === 'CONGE_ANNUEL' && formulaire.date_debut
+                        ? ajouterJoursISO(formulaire.date_debut, JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL - 1)
+                        : undefined}
                       value={formulaire.date_fin}
                       onChange={(event) => modifierChamp('date_fin', event.target.value)}
                       className={champ}
                     />
+                    {formulaire.type_absence === 'CONGE_ANNUEL' && (
+                      <p className="mt-1.5 text-xs font-medium text-[#86868B]">
+                        {regleTrancheAnnuelle?.premiere_tranche
+                          ? `La première tranche doit couvrir exactement ${JOURS_PREMIERE_TRANCHE_CONGE_ANNUEL} jours calendaires.`
+                          : `Une tranche ultérieure ne peut pas dépasser ${JOURS_MAX_TRANCHE_CONGE_ANNUEL} jours calendaires.`}
+                      </p>
+                    )}
                   </div>
                 </>
               )}
@@ -1030,7 +1374,7 @@ export function NouvelleDemandePage() {
                   maxLength={200}
                   required
                   value={formulaire.lieu_jouissance}
-                  onChange={(event) => modifierChamp('lieu_jouissance', event.target.value)}
+                  onChange={(event) => modifierChamp('lieu_jouissance', event.target.value.replace(/[\r\n\t]/g, ' '))}
                   placeholder="Lieu où le congé sera passé"
                   className={champ}
                 />
@@ -1107,12 +1451,22 @@ export function NouvelleDemandePage() {
           </GroupeFormulaire>
 
           <div className="rh-in flex flex-col-reverse items-center gap-3 pt-4 sm:flex-row sm:justify-end" style={delai(450)}>
-            <Link to={dansEspaceService ? '/app/chef-service' : '/app/agent/mes-demandes'} className={`${btnContour} w-full sm:w-auto`}>
+            <Link to={cheminRetour} className={`${btnContour} w-full sm:w-auto`}>
               <Icon name="close" className="h-4 w-4" /> Annuler
             </Link>
             <button
               type="submit"
-              disabled={envoiEnCours || chargementPersonnelCible || (demandePourUnAgent && !personnelCible)}
+              disabled={
+                envoiEnCours
+                || chargementPersonnelCible
+                || (demandePourUnAgent && !personnelCible)
+                || (formulaire.type_absence === 'CONGE_ANNUEL' && (
+                  chargementRegleTranche
+                  || !regleTrancheAnnuelle
+                  || Boolean(erreurRegleTranche)
+                  || regleTrancheAnnuelle.historique_incoherent
+                ))
+              }
               className={`${btnPrimaire} w-full sm:w-auto`}
             >
               {envoiEnCours ? <Icon name="loader" className="h-4 w-4 animate-spin" /> : <Icon name="check" className="h-4 w-4" />}
@@ -1120,6 +1474,15 @@ export function NouvelleDemandePage() {
             </button>
           </div>
         </form>
+          </>
+        )}
+        {dansContexteSaisieDeleguee && !demandePourUnAgent && !chargementListePersonnels && !erreurListePersonnels && (
+          <p className="rounded-xl border border-dashed border-[#B4B4BF] bg-white p-4 text-sm text-[#5D5D66]">
+            {estEspaceRHDelegue
+              ? 'Sélectionnez un agent ci-dessus pour afficher le formulaire. Les champs, contrôles et règles seront identiques à ceux de l’espace Chef de service.'
+              : 'Sélectionnez un membre de votre service ci-dessus pour afficher le formulaire de sa demande.'}
+          </p>
+        )}
       </div>
     </CoquilleDemandeRole>
   )

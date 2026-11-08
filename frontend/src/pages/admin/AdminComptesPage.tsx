@@ -31,6 +31,7 @@ import { Icon, Message, type IconName } from '../../components/men/ui'
 import { delai, useCompteur } from '../../components/men/ui-outils'
 import { CoquilleAdmin, Tiroir } from '../../components/men/miseEnPageRH'
 import { messageErreurUtilisateur } from '../../lib/messages'
+import GestionAgentsAdmin from './GestionAgentsAdmin'
 
 const TAILLE_PAGE = 20
 
@@ -422,6 +423,7 @@ export function AdminComptesPage() {
   const { utilisateur, chargement } = useAuth()
   const estAdministrateur = utilisateur?.role === 'ROLE_ADMIN'
 
+  const [sectionAdmin, setSectionAdmin] = useState<'comptes' | 'agents'>('comptes')
   const [comptes, setComptes] = useState<CompteUtilisateur[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -656,30 +658,56 @@ export function AdminComptesPage() {
     <CoquilleAdmin
       vue="comptes"
       onVue={() => undefined}
-      titre="Comptes"
-      description="Gérez les accès utilisateurs"
+      titre={sectionAdmin === 'comptes' ? 'Comptes' : 'Agents'}
+      description={sectionAdmin === 'comptes' ? 'Gérez les accès utilisateurs' : 'Gérez les fiches administratives des agents'}
       actions={
-        <>
-          <button
-            type="button"
-            onClick={() => { setMessageSucces(null); setCleActualisation((c) => c + 1) }}
-            disabled={enChargement}
-            aria-label="Actualiser"
-            title="Actualiser"
-            className={`${btnContour} !px-3`}
-          >
-            <Icon name="refresh" className={`h-4 w-4 ${enChargement ? 'animate-spin' : ''}`} />
-          </button>
-          <button type="button" onClick={ouvrirCreation} className={btnPrimaire}>
-            <Icon name="plus" className="h-4 w-4" />
-            <span className="hidden sm:inline">Créer un compte</span>
-          </button>
-        </>
+        sectionAdmin === 'comptes' ? (
+          <>
+            <button
+              type="button"
+              onClick={() => { setMessageSucces(null); setCleActualisation((c) => c + 1) }}
+              disabled={enChargement}
+              aria-label="Actualiser"
+              title="Actualiser"
+              className={`${btnContour} !px-3`}
+            >
+              <Icon name="refresh" className={`h-4 w-4 ${enChargement ? 'animate-spin' : ''}`} />
+            </button>
+            <button type="button" onClick={ouvrirCreation} className={btnPrimaire}>
+              <Icon name="plus" className="h-4 w-4" />
+              <span className="hidden sm:inline">Créer un compte</span>
+            </button>
+          </>
+        ) : null
       }
     >
       <style>{STYLES}</style>
 
-      <div className="adm-root min-w-0 space-y-6 rounded-[32px] border border-[#E5E5EA] bg-white p-3 sm:p-4">
+      <div className="adm-root min-w-0 space-y-4 rounded-[32px] border border-[#E5E5EA] bg-white p-3 sm:p-4">
+        <nav aria-label="Administration" className="flex flex-wrap items-center gap-2 rounded-2xl bg-[#F5F5F7] p-1.5">
+          <button
+            type="button"
+            aria-current={sectionAdmin === 'comptes' ? 'page' : undefined}
+            onClick={() => setSectionAdmin('comptes')}
+            className={`inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition ${sectionAdmin === 'comptes' ? 'bg-white text-[#1B1BFF] shadow-sm' : 'text-[#686870] hover:bg-white/70'}`}
+          >
+            <Icon name="key" className="h-4 w-4" /> Comptes utilisateurs
+          </button>
+          <button
+            type="button"
+            aria-current={sectionAdmin === 'agents' ? 'page' : undefined}
+            onClick={() => setSectionAdmin('agents')}
+            className={`inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition ${sectionAdmin === 'agents' ? 'bg-white text-[#1B1BFF] shadow-sm' : 'text-[#686870] hover:bg-white/70'}`}
+          >
+            <Icon name="users" className="h-4 w-4" /> Fiches agents
+          </button>
+        </nav>
+
+        {sectionAdmin === 'agents' ? (
+          <GestionAgentsAdmin onOuvrirComptes={() => setSectionAdmin('comptes')} />
+        ) : (
+        <>
+        <div className="space-y-6">
         {messageSucces && (
           <Message key={messageSucces} type="succes" onClose={() => setMessageSucces(null)}>
             {messageSucces}
@@ -1145,6 +1173,9 @@ export function AdminComptesPage() {
             )}
           </form>
         </Tiroir>
+        </div>
+        </>
+        )}
       </div>
     </CoquilleAdmin>
   )

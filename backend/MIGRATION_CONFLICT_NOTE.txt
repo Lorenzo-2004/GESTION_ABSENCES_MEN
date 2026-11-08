@@ -1,0 +1,11 @@
+CORRECTION DU CONFLIT DE MIGRATIONS — MEN
+
+Cette archive exclut volontairement backend/conges/migrations/0008_alter_decisionconge_indice.py, car le projet local possède déjà la migration équivalente 0008_alter_decisionconge_indice_code.py. Ne pas réintroduire le fichier exclu.
+
+Après fusion des fichiers, depuis backend :
+  Remove-Item .\conges\migrations\0008_alter_decisionconge_indice.py -ErrorAction SilentlyContinue
+  python manage.py showmigrations conges
+  python manage.py makemigrations --check --dry-run
+  python manage.py check
+
+Vérifier qu'une seule migration 0008 est présente, puis relancer les tests.

@@ -39,8 +39,8 @@ const STYLES = `
 @keyframes men-bounce-subtle{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 @keyframes men-fade-slide-right{from{opacity:0;transform:translate3d(-20px,0,0)}to{opacity:1;transform:none}}
 @keyframes men-particle-float{0%,100%{transform:translate3d(0,0,0) scale(1);opacity:.3}50%{transform:translate3d(20px,-30px,0) scale(1.3);opacity:.7}}
-@keyframes men-text-glow{0%,100%{text-shadow:0 0 20px rgba(255,255,255,.3)}50%{text-shadow:0 0 40px rgba(255,255,255,.6), 0 0 60px rgba(110,151,137,.28)}}
-@keyframes men-border-glow{0%,100%{box-shadow:0 14px 36px -14px rgba(43,55,72,.45), 0 0 0 0 rgba(43,55,72,.4)}50%{box-shadow:0 14px 36px -14px rgba(43,55,72,.6), 0 0 0 12px rgba(43,55,72,0)}}
+@keyframes men-text-glow{0%,100%{text-shadow:0 0 20px rgba(255,255,255,.3)}50%{text-shadow:0 0 40px rgba(255,255,255,.6), 0 0 60px rgba(65,111,174,.28)}}
+@keyframes men-border-glow{0%,100%{box-shadow:0 14px 36px -14px rgba(23,59,112,.45), 0 0 0 0 rgba(23,59,112,.4)}50%{box-shadow:0 14px 36px -14px rgba(23,59,112,.6), 0 0 0 12px rgba(23,59,112,0)}}
 
 .men-rise{animation:men-rise .85s cubic-bezier(.2,.7,.2,1) var(--d,0ms) both}
 .men-fade{animation:men-fade 1.4s ease-out var(--d,0ms) both}
@@ -155,20 +155,20 @@ function Art() {
     >
       <defs>
         <linearGradient id="men-fond-art" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#2B3748" />
-          <stop offset=".55" stopColor="#2B3748" />
-          <stop offset="1" stopColor="#4C8A74" />
+          <stop offset="0" stopColor="#173B70" />
+          <stop offset=".55" stopColor="#173B70" />
+          <stop offset="1" stopColor="#2D63AE" />
         </linearGradient>
         <radialGradient id="men-lueur-art" cx=".78" cy=".28" r=".6">
-          <stop offset="0" stopColor="#4C8A74" stopOpacity=".55" />
-          <stop offset="1" stopColor="#4C8A74" stopOpacity="0" />
+          <stop offset="0" stopColor="#2D63AE" stopOpacity=".55" />
+          <stop offset="1" stopColor="#2D63AE" stopOpacity="0" />
         </radialGradient>
         <filter id="men-ombre-art" x="-30%" y="-5%" width="160%" height="110%">
           <feDropShadow
             dx="7"
             dy="0"
             stdDeviation="8"
-            floodColor="#2B3748"
+            floodColor="#173B70"
             floodOpacity=".4"
           />
         </filter>
@@ -182,7 +182,7 @@ function Art() {
         y={-10}
         angle={125}
         echelle={1.2}
-        teintes={['#2B3748', '#2B3748', '#2B3748']}
+        teintes={['#173B70', '#173B70', '#173B70']}
         duree={11}
         retard={-2}
       />
@@ -191,7 +191,7 @@ function Art() {
         y={600}
         angle={-168}
         echelle={1.35}
-        teintes={['#2B3748', '#2B3748', '#4C8A74']}
+        teintes={['#173B70', '#173B70', '#2D63AE']}
         duree={10}
         retard={-5}
       />
@@ -200,7 +200,7 @@ function Art() {
         y={720}
         angle={-62}
         echelle={1.55}
-        teintes={['#2B3748', '#2B3748', '#2B3748']}
+        teintes={['#173B70', '#173B70', '#173B70']}
         duree={12}
       />
       <Fronde
@@ -208,7 +208,7 @@ function Art() {
         y={735}
         angle={-98}
         echelle={1.25}
-        teintes={['#2B3748', '#2B3748', '#4C8A74']}
+        teintes={['#173B70', '#173B70', '#2D63AE']}
         duree={8}
         retard={-3}
       />
@@ -245,16 +245,16 @@ function ArtMobile() {
     >
       <defs>
         <linearGradient id="men-fond-mobile" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#2B3748" />
-          <stop offset=".6" stopColor="#2B3748" />
-          <stop offset="1" stopColor="#4C8A74" />
+          <stop offset="0" stopColor="#173B70" />
+          <stop offset=".6" stopColor="#173B70" />
+          <stop offset="1" stopColor="#2D63AE" />
         </linearGradient>
         <filter id="men-ombre-mobile" x="-5%" y="-30%" width="110%" height="160%">
           <feDropShadow
             dx="0"
             dy="4"
             stdDeviation="5"
-            floodColor="#2B3748"
+            floodColor="#173B70"
             floodOpacity=".35"
           />
         </filter>
@@ -267,7 +267,7 @@ function ArtMobile() {
         y={170}
         angle={-155}
         echelle={0.55}
-        teintes={['#2B3748', '#2B3748', '#4C8A74']}
+        teintes={['#173B70', '#173B70', '#2D63AE']}
         duree={10}
       />
       <Fronde
@@ -275,7 +275,7 @@ function ArtMobile() {
         y={175}
         angle={-35}
         echelle={0.5}
-        teintes={['#2B3748', '#2B3748', '#4C8A74']}
+        teintes={['#173B70', '#173B70', '#2D63AE']}
         duree={9}
         retard={-3}
       />
@@ -299,10 +299,10 @@ function ArtMobile() {
 /* ------------------------------------------------------------------ */
 
 const champ =
-  'h-[48px] w-full rounded-full border border-[#E5E5EA] bg-white pl-12 pr-5 text-sm text-[#0A0A0A] shadow-[0_2px_8px_rgba(28,36,46,.06)] outline-none transition duration-200 placeholder:text-[#86868B] hover:border-[#E5E5EA] focus:border-[#2B3748]/25 focus:ring-4 focus:ring-[#2B3748]/15 disabled:bg-[#F0F1F2] disabled:text-slate-500 aria-[invalid=true]:border-red-400 aria-[invalid=true]:focus:ring-red-500/10'
+  'h-[48px] w-full rounded-full border border-[#E5E5EA] bg-white pl-12 pr-5 text-sm text-[#0A0A0A] shadow-[0_2px_8px_rgba(28,36,46,.06)] outline-none transition duration-200 placeholder:text-[#86868B] hover:border-[#E5E5EA] focus:border-[#173B70]/25 focus:ring-4 focus:ring-[#173B70]/15 disabled:bg-[#F0F1F2] disabled:text-slate-500 aria-[invalid=true]:border-red-400 aria-[invalid=true]:focus:ring-red-500/10'
 
 const etiquette =
-  'mb-2 block pl-4 text-xs font-semibold tracking-[.01em] text-[#0A0A0A] transition-colors duration-200 group-focus-within:text-[#2B3748]'
+  'mb-2 block pl-4 text-xs font-semibold tracking-[.01em] text-[#0A0A0A] transition-colors duration-200 group-focus-within:text-[#173B70]'
 
 /* ------------------------------------------------------------------ */
 /* Page de connexion                                                   */
@@ -325,7 +325,7 @@ export function LoginPage() {
         <span
           role="status"
           aria-label="Chargement"
-          className="h-6 w-6 animate-spin rounded-full border-2 border-[#2B3748]/20 border-t-[#2B3748]"
+          className="h-6 w-6 animate-spin rounded-full border-2 border-[#173B70]/20 border-t-[#173B70]"
         />
       </main>
     )
@@ -372,23 +372,23 @@ export function LoginPage() {
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-[linear-gradient(135deg,#E4E6E8_0%,#F8F8F7_52%,#E8EEEA_100%)] px-4 py-8 font-sans text-[#0A0A0A] antialiased sm:px-8">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-[linear-gradient(135deg,#E4E6E8_0%,#F8F8F7_52%,#E9EEF6_100%)] px-4 py-8 font-sans text-[#0A0A0A] antialiased sm:px-8">
       <style>{STYLES}</style>
 
       {/* Halos flous en arrière-plan */}
       <span
         aria-hidden="true"
-        className="men-float men-glow pointer-events-none absolute -left-24 -top-24 h-96 w-96 rounded-full bg-slate-400/25 blur-3xl"
+        className="men-float men-glow pointer-events-none absolute -left-24 -top-24 h-96 w-96 rounded-full bg-blue-800/20 blur-3xl"
         style={{ '--f': '17s', '--fd': '-3s' } as CSSProperties}
       />
       <span
         aria-hidden="true"
-        className="men-float men-glow pointer-events-none absolute -bottom-32 -right-24 h-[28rem] w-[28rem] rounded-full bg-emerald-600/15 blur-3xl"
+        className="men-float men-glow pointer-events-none absolute -bottom-32 -right-24 h-[28rem] w-[28rem] rounded-full bg-blue-700/15 blur-3xl"
         style={{ '--f': '20s', '--fd': '-8s' } as CSSProperties}
       />
       <span
         aria-hidden="true"
-        className="men-float men-glow pointer-events-none absolute right-[18%] top-[6%] h-56 w-56 rounded-full bg-slate-500/20 blur-3xl"
+        className="men-float men-glow pointer-events-none absolute right-[18%] top-[6%] h-56 w-56 rounded-full bg-blue-800/15 blur-3xl"
         style={{ '--f': '14s', '--fd': '-5s' } as CSSProperties}
       />
 
@@ -408,7 +408,7 @@ export function LoginPage() {
                 <div className="men-border-glow relative grid h-[72px] w-[72px] place-items-center rounded-[20px] border border-[#D8DDE2] bg-white p-2.5">
                   <span
                     aria-hidden="true"
-                    className="men-pulse-ring absolute inset-0 rounded-[20px] border-2 border-[#2B3748]/25"
+                    className="men-pulse-ring absolute inset-0 rounded-[20px] border-2 border-[#173B70]/25"
                   />
                   <img
                     src="/LOGOMEN.jpg"
@@ -428,7 +428,7 @@ export function LoginPage() {
                 </h1>
                 <div
                   aria-hidden="true"
-                  className="men-accent-reveal mx-auto mt-5 h-[3px] w-10 rounded-full bg-gradient-to-r from-[#2B3748] to-[#5E8278]"
+                  className="men-accent-reveal mx-auto mt-5 h-[3px] w-10 rounded-full bg-gradient-to-r from-[#173B70] to-[#416FAE]"
                   style={delai(380)}
                 />
               </div>
@@ -534,7 +534,7 @@ export function LoginPage() {
                           : 'Afficher le mot de passe'
                       }
                       aria-pressed={showPassword}
-                      className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-[#86868B] transition hover:bg-[#2B3748]/10 hover:text-[#2B3748] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2B3748]/30"
+                      className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-[#86868B] transition hover:bg-[#173B70]/10 hover:text-[#173B70] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#173B70]/30"
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -589,7 +589,7 @@ export function LoginPage() {
                   <button
                     type="submit"
                     disabled={pending || !identifiant.trim() || !password}
-                    className="men-submit men-gradient-shift group flex h-[48px] w-full items-center justify-center gap-2.5 rounded-full bg-[linear-gradient(135deg,#2B3748_0%,#2B3748_50%,#4C8A74_100%)] px-4 text-sm font-semibold tracking-wide text-white shadow-[0_14px_28px_-12px_rgba(43,55,72,.8)] transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_34px_-12px_rgba(43,55,72,.9)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#2B3748]/30 active:translate-y-0 disabled:pointer-events-none disabled:opacity-50"
+                    className="men-submit men-gradient-shift group flex h-[48px] w-full items-center justify-center gap-2.5 rounded-full bg-[linear-gradient(135deg,#173B70_0%,#173B70_50%,#2D63AE_100%)] px-4 text-sm font-semibold tracking-wide text-white shadow-[0_14px_28px_-12px_rgba(23,59,112,.8)] transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_34px_-12px_rgba(23,59,112,.9)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#173B70]/30 active:translate-y-0 disabled:pointer-events-none disabled:opacity-50"
                   >
                     {pending && (
                       <span
@@ -689,7 +689,7 @@ export function LoginPage() {
               } as CSSProperties}
             />
 
-            <div className="absolute bottom-0 left-[-100%] right-0 h-1/2 bg-gradient-to-t from-[#202A35]/90 via-[#202A35]/45 to-transparent" />
+            <div className="absolute bottom-0 left-[-100%] right-0 h-1/2 bg-gradient-to-t from-[#11294B]/90 via-[#11294B]/45 to-transparent" />
 
 
           </div>
