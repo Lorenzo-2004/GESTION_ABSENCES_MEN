@@ -94,12 +94,12 @@ const TONS_KPI = {
 } as const
 
 const TITRES_VUES: Record<VueAgent, { titre: string; description: string }> = {
-  apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et soldes' },
-  demandes: { titre: 'Mes demandes', description: 'Consultez vos demandes et leur état' },
-  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Déposez une demande ou une annonce d’absence' },
-  soldes: { titre: 'Mes soldes', description: 'Droits à congé de l’année en cours' },
-  historique: { titre: 'Historique', description: 'Détail des validations par les responsables' },
-  profil: { titre: 'Mon profil', description: 'Informations du personnel' },
+  apercu: { titre: "Vue d'ensemble", description: 'Demandes et soldes' },
+  demandes: { titre: 'Mes demandes', description: 'Suivi des demandes' },
+  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Créer une demande' },
+  soldes: { titre: 'Mes soldes', description: 'Solde disponible' },
+  historique: { titre: 'Historique', description: 'Validations' },
+  profil: { titre: 'Mon profil', description: 'Fiche agent' },
 }
 
 /* ------------------------------------------------------------------ */

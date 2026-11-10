@@ -2,390 +2,184 @@ import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Navigate, Link } from 'react-router'
 import { useAuth } from '../../contexts/useAuth'
 import { peutAccederEspaceAgent } from '../../lib/roles'
-import { delai } from '../../components/men/ui-outils'
 
-const ACCENT = '#1B1BFF'
+type Onglet = 'personnel' | 'professionnel'
+const ONGLETS: { id: Onglet; titre: string }[] = [
+  { id: 'personnel', titre: 'Informations personnelles' },
+  { id: 'professionnel', titre: 'Situation professionnelle' },
+]
 
-const STYLES = `
-.prof-root{font-family:'Inter Variable','Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif}
-.prof-root .men-serif{font-family:'Space Grotesk Variable','Space Grotesk','Inter Variable','Inter',sans-serif;font-weight:600;letter-spacing:-.02em}
-
-@keyframes pr-rise{from{opacity:0;transform:translate3d(0,16px,0)}to{opacity:1;transform:none}}
-@keyframes pr-row{from{opacity:0;transform:translate3d(-8px,0,0)}to{opacity:1;transform:none}}
-@keyframes pr-panel{from{opacity:0;transform:translate3d(0,10px,0)}to{opacity:1;transform:none}}
-@keyframes pr-avatar{0%{opacity:0;transform:scale(.7) rotate(-8deg)}100%{opacity:1;transform:none}}
-@keyframes pr-frame{0%{opacity:0;transform:translate3d(0,0,0) scale(.9)}100%{opacity:1;transform:translate3d(10px,-10px,0) scale(1)}}
-@keyframes pr-breathe{0%,100%{transform:translate3d(10px,-10px,0)}50%{transform:translate3d(13px,-13px,0)}}
-@keyframes pr-stat{from{opacity:0;transform:translate3d(0,22px,0) scale(.96);filter:blur(6px)}to{opacity:1;transform:none;filter:blur(0)}}
-@keyframes pr-nav{from{opacity:0;transform:translate3d(0,-12px,0)}to{opacity:1;transform:none}}
-@keyframes pr-line{from{transform:scaleX(0)}to{transform:scaleX(1)}}
-@keyframes pr-banner{from{opacity:0}to{opacity:1}}
-@keyframes pr-float-a{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(40px,14px,0) scale(1.08)}}
-@keyframes pr-float-b{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(-34px,10px,0) scale(1.1)}}
-
-.pr-rise{animation:pr-rise .7s cubic-bezier(.22,1,.36,1) var(--d,0ms) backwards}
-.pr-row{animation:pr-row .45s cubic-bezier(.22,1,.36,1) var(--d,0ms) backwards}
-.pr-panel{animation:pr-panel .4s cubic-bezier(.22,1,.36,1) backwards}
-.pr-avatar{animation:pr-avatar .9s cubic-bezier(.34,1.56,.64,1) 150ms backwards}
-.pr-frame{animation:pr-frame .9s cubic-bezier(.22,1,.36,1) 450ms both,pr-breathe 6s ease-in-out 1.4s infinite}
-.pr-stat{animation:pr-stat .8s cubic-bezier(.22,1,.36,1) var(--d,0ms) backwards}
-.pr-nav{animation:pr-nav .6s cubic-bezier(.22,1,.36,1) var(--d,0ms) backwards}
-.pr-line{transform-origin:left center;animation:pr-line .8s cubic-bezier(.22,1,.36,1) 500ms backwards}
-.pr-link{position:relative}
-.pr-link::after{content:"";position:absolute;left:0;right:0;bottom:-6px;height:2px;border-radius:2px;background:#C7CDD3;transform:scaleX(0);transform-origin:left;transition:transform .3s cubic-bezier(.22,1,.36,1)}
-.pr-link:hover::after,.pr-link:focus-visible::after{transform:scaleX(1)}
-.pr-banner{animation:pr-banner 1s ease-out backwards}
-.pr-float-a{animation:pr-float-a 14s ease-in-out infinite}
-.pr-float-b{animation:pr-float-b 18s ease-in-out infinite}
-
-@media (prefers-reduced-motion:reduce){
-  .pr-rise,.pr-row,.pr-panel,.pr-avatar,.pr-frame,.pr-stat,.pr-nav,.pr-line,.pr-banner,.pr-float-a,.pr-float-b{animation:none!important}
-  .pr-frame{transform:translate3d(10px,-10px,0)}
-}
-`
-
-function dateLisible(date: string | null | undefined): string {
-  if (!date) return ''
+function dateLisible(date?: string | null): string {
+  if (!date) return '—'
   const valeur = new Date(date)
-  if (Number.isNaN(valeur.getTime())) return ''
+  if (Number.isNaN(valeur.getTime())) return '—'
   return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' }).format(valeur)
 }
 
-function initiales(nom: string): string {
-  const lettres = nom
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((mot) => mot[0]?.toUpperCase())
-    .join('')
-  return lettres || '?'
+function initiales(texte: string): string {
+  return texte.trim().split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((mot) => mot.charAt(0).toUpperCase()).join('') || '—'
 }
 
-const TEINTES = {
-  bleu: 'bg-[#CDD8E7]',
-  gris: 'bg-[#E1E3E6]',
-  vert: 'bg-[#B3DECB]',
-} as const
-
-/* Cartes de profil : fonds contrastés, contenu aligné et valeurs adaptables aux libellés longs. */
-function Section({
-  titre,
-  description,
-  teinte,
-  children,
-  retard = 0,
-}: {
-  titre: string
-  description: string
-  teinte: keyof typeof TEINTES
-  children: ReactNode
-  retard?: number
-}) {
+function Champ({ titre, valeur, children }: { titre: string; valeur?: string | number | null; children?: ReactNode }) {
+  const affichage = children ?? (valeur === undefined || valeur === null || valeur === '' ? '—' : valeur)
   return (
-    <section className="pr-row group min-w-0" style={delai(retard)}>
-      <div
-        className={`flex min-h-[210px] min-w-0 flex-col justify-center rounded-[24px] p-4 transition duration-300 ease-out group-hover:-translate-y-1 group-hover:shadow-[0_22px_34px_-24px_rgba(20,24,28,0.35)] sm:p-5 ${TEINTES[teinte]}`}
-      >
-        <dl className="min-w-0 divide-y divide-[#DDE0E4] rounded-2xl border border-white/80 bg-white px-4 py-1 shadow-[0_8px_24px_-14px_rgba(25,29,34,0.28)] transition-transform duration-300 group-hover:scale-[1.01]">
-          {children}
-        </dl>
-      </div>
-      <div className="mt-3 px-1">
-        <h2 className="text-lg font-semibold tracking-[-0.02em] text-[#202327]">{titre}</h2>
-        <p className="mt-0.5 text-[13px] text-[#5D6269]">{description}</p>
-      </div>
+    <div className="min-w-0 border-b border-slate-100 py-3.5 last:border-b-0">
+      <dt className="mb-1 text-xs font-medium text-slate-500">{titre}</dt>
+      <dd className="break-words text-sm font-medium leading-6 text-slate-900 [overflow-wrap:anywhere]">{affichage}</dd>
+    </div>
+  )
+}
+
+function Panneau({ titre, children }: { titre: string; children: ReactNode }) {
+  return (
+    <section className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-[0_6px_24px_-18px_rgba(15,23,42,0.25)] sm:p-6">
+      <h2 className="mb-3 text-base font-semibold tracking-tight text-slate-900">{titre}</h2>
+      <dl>{children}</dl>
     </section>
   )
 }
 
-function Ligne({
-  libelle,
-  valeur,
-  retard,
-}: {
-  libelle: string
-  valeur: string | number | null | undefined
-  retard: number
-}) {
-  const vide = valeur === null || valeur === undefined || valeur === ''
-  return (
-    <div className="pr-row grid min-w-0 grid-cols-1 items-start gap-1.5 py-3 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] sm:gap-3" style={delai(retard)}>
-      <dt className="min-w-0 break-words text-[12px] leading-5 text-[#5F656C] sm:text-[13px]">{libelle}</dt>
-      <dd
-        className={`min-w-0 break-words text-right text-[13px] leading-5 [overflow-wrap:anywhere] sm:text-sm ${
-          vide ? 'italic text-[#626870]' : 'font-semibold text-[#202327]'
-        }`}
-      >
-        {vide ? 'Non renseigné' : String(valeur)}
-      </dd>
-    </div>
-  )
-}
-
-function Stat({ libelle, valeur, retard }: { libelle: string; valeur: string; retard: number }) {
-  return (
-    <div className="pr-stat min-w-0 rounded-xl border border-white/15 bg-white/[0.06] p-3" style={delai(retard)}>
-      <p className="text-[13px] font-semibold text-white/70">{libelle}</p>
-      <p className="men-serif mt-1.5 line-clamp-2 break-words text-lg leading-[1.15] text-white [overflow-wrap:anywhere] sm:text-xl" title={valeur}>
-        {valeur}
-      </p>
-    </div>
-  )
-}
-
-type Onglet = 'infos' | 'pro'
-
-const ONGLETS: { id: Onglet; libelle: string }[] = [
-  { id: 'infos', libelle: 'Informations' },
-  { id: 'pro', libelle: 'Parcours professionnel' },
-]
-
-const LIENS = [
-  { to: '/app/agent/soldes', libelle: 'Mes soldes' },
-  { to: '/app/agent/mes-demandes', libelle: 'Mes demandes' },
-  { to: '/app/agent/nouvelle-demande', libelle: 'Nouvelle demande' },
-  { to: '/app/agent/historique', libelle: 'Historique' },
-]
-
 export function ProfilAgentPage() {
   const { utilisateur, chargement } = useAuth()
-  const [ongletActif, setOngletActif] = useState<Onglet>('infos')
-  const refsOnglets = useRef<Record<Onglet, HTMLButtonElement | null>>({ infos: null, pro: null })
+  const [onglet, setOnglet] = useState<Onglet>('personnel')
+  const boutons = useRef<Record<Onglet, HTMLButtonElement | null>>({ personnel: null, professionnel: null })
 
   if (chargement) {
-    return (
-      <div className="grid min-h-screen place-items-center bg-[#FAFAF8]">
-        <style>{STYLES}</style>
-        <div className="pr-rise flex flex-col items-center gap-4" role="status" aria-live="polite">
-          <span
-            className="h-9 w-9 animate-spin rounded-full border-[3px] border-white/25 border-t-[#477B68]"
-          />
-          <p className="text-sm text-[#86868B]">Chargement de votre profil…</p>
-        </div>
-      </div>
-    )
+    return <div className="grid min-h-[45vh] place-items-center text-sm text-slate-500" role="status">Chargement du profil…</div>
   }
-
   if (!utilisateur) return <Navigate to="/connexion" replace />
   if (!peutAccederEspaceAgent(utilisateur.role)) return <Navigate to="/app" replace />
 
   const personnel = utilisateur.personnel
-
   if (!personnel) {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#FAFAF8] p-6">
-        <style>{STYLES}</style>
-        <section className="pr-rise max-w-md rounded-[28px] bg-[#E3E6E9] p-8 text-center">
-          <h1 className="men-serif text-2xl text-[#0A0A0A]">Profil indisponible</h1>
-          <p className="mt-3 text-sm leading-relaxed text-[#555]">
-            Aucun dossier du personnel n’est associé à ce compte. Contactez le service des ressources humaines pour
-            vérifier votre rattachement.
-          </p>
-        </section>
-      </div>
+      <section className="mx-auto mt-12 max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center">
+        <h1 className="text-xl font-semibold text-slate-900">Profil indisponible</h1>
+        <p className="mt-2 text-sm text-slate-600">Aucune fiche agent associée. Contactez les RH.</p>
+      </section>
     )
   }
 
-  const nomComplet = personnel.nom_complet || `${personnel.prenoms} ${personnel.nom}`.trim()
-  const corpsGrade = personnel.corps || personnel.grade || '—'
-
-  const surTouche = (e: KeyboardEvent<HTMLButtonElement>) => {
-    const ordre = ONGLETS.map((o) => o.id)
-    const i = ordre.indexOf(ongletActif)
-    let cible: Onglet | null = null
-    if (e.key === 'ArrowRight') cible = ordre[(i + 1) % ordre.length]
-    if (e.key === 'ArrowLeft') cible = ordre[(i - 1 + ordre.length) % ordre.length]
-    if (e.key === 'Home') cible = ordre[0]
-    if (e.key === 'End') cible = ordre[ordre.length - 1]
+  const nom = personnel.nom_complet || `${personnel.prenoms || ''} ${personnel.nom || ''}`.trim()
+  const touchesOnglets = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const ids = ONGLETS.map(({ id }) => id)
+    const position = ids.indexOf(onglet)
+    let cible: Onglet | undefined
+    if (event.key === 'ArrowRight') cible = ids[(position + 1) % ids.length]
+    if (event.key === 'ArrowLeft') cible = ids[(position + ids.length - 1) % ids.length]
+    if (event.key === 'Home') cible = ids[0]
+    if (event.key === 'End') cible = ids[ids.length - 1]
     if (cible) {
-      e.preventDefault()
-      setOngletActif(cible)
-      refsOnglets.current[cible]?.focus()
+      event.preventDefault()
+      setOnglet(cible)
+      boutons.current[cible]?.focus()
     }
   }
 
-  const indexActif = ONGLETS.findIndex((o) => o.id === ongletActif)
-
   return (
-    <div className="prof-root min-h-screen bg-[#FAFAF8] px-3 py-6 text-[#0A0A0A] sm:px-6 sm:py-10">
-      <style>{STYLES}</style>
-
-      {/* ---- CONTENEUR DE LA PAGE ---- */}
-      <div className="pr-rise relative mx-auto max-w-4xl overflow-hidden rounded-[28px] border border-[#D8DADD] bg-white shadow-[0_1px_2px_rgba(10,10,10,0.05),0_24px_50px_-28px_rgba(20,24,28,0.24)]">
-
-      {/* ---- HAUT DE PAGE : tout le contenu est à l'intérieur du dégradé ---- */}
-      <div className="relative">
-        <div aria-hidden="true" className="pr-banner pointer-events-none absolute inset-0 overflow-hidden bg-gradient-to-br from-[#172554] via-[#1D4ED8] to-[#1B1BFF]">
-          <div className="pr-float-a absolute -left-16 top-[25%] h-[75%] w-[60%] rounded-[100%] bg-[#B8C0C8]/16 blur-3xl" />
-          <div className="pr-float-b absolute -top-[10%] right-[2%] h-[70%] w-[45%] rounded-[100%] bg-[#60A5FA]/20 blur-3xl" />
+    <main className="min-h-full bg-[#F8FAFC] px-3 pb-10 pt-5 text-slate-900 sm:px-6 sm:pt-7">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Mon espace</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Mon profil</h1>
+          </div>
+          <Link to="/app/agent/nouvelle-demande" className="inline-flex shrink-0 items-center justify-center rounded-xl bg-[#1B1BFF] px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-[#1414CB] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1B1BFF] sm:text-sm">
+            Nouvelle demande
+          </Link>
         </div>
 
-      <div className="relative px-5 pb-8 sm:px-8">
-        {/* ---- LIENS EN HAUT ---- */}
-        <nav
-          aria-label="Navigation agent"
-          className="flex flex-wrap items-center justify-center gap-x-8 gap-y-2 py-5"
-        >
-          {LIENS.map((l, i) => (
-            <Link
-              key={l.to}
-              to={l.to}
-              style={delai(60 + i * 70)}
-              className="pr-nav pr-link rounded-md text-sm font-medium text-white/75 transition-colors duration-200 hover:text-white focus:outline-none focus-visible:ring-4 focus-visible:ring-white/30"
-            >
-              {l.libelle}
-            </Link>
-          ))}
-        </nav>
-
-        {/* ---- EN-TÊTE PROFIL ---- */}
-        <header className="mt-6 flex flex-col items-center gap-6 md:mt-8 md:flex-row md:items-end md:gap-8">
-          <div className="pr-avatar relative shrink-0">
-            <span
-              aria-hidden="true"
-              className="pr-frame absolute inset-0 rounded-[60px] bg-white/10 ring-1 ring-white/35 backdrop-blur-sm"
-            />
-            <span className="men-serif relative grid h-[170px] w-[170px] place-items-center rounded-[60px] bg-gradient-to-br from-[#3B82F6] via-[#1E40AF] to-[#172554] text-5xl text-white shadow-[0_24px_44px_-20px_rgba(30,64,175,0.48)] sm:h-[200px] sm:w-[200px] sm:text-6xl">
-              {initiales(nomComplet || utilisateur.username)}
-            </span>
-          </div>
-
-          <div className="flex min-w-0 flex-1 flex-col items-center gap-6 pb-1 md:items-stretch">
-            <div className="min-w-0 text-center md:text-left">
-              <div className="pr-rise flex flex-wrap items-center justify-center gap-3 md:justify-start" style={delai(200)}>
-                <h1 className="men-serif text-2xl leading-tight text-white sm:text-[2rem]">{nomComplet}</h1>
-                <span
-                  className="rounded-lg px-2.5 py-1 text-xs font-bold text-white ring-1 ring-white/20"
-                  style={{ backgroundColor: ACCENT }}
-                >
-                  {utilisateur.role_libelle || 'Agent'}
-                </span>
+        <section className="relative overflow-hidden rounded-[24px] bg-[#142B56] p-5 text-white shadow-[0_14px_38px_-24px_rgba(15,23,42,0.65)] sm:p-7">
+          <div aria-hidden="true" className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full border-[45px] border-white/[0.045]" />
+          <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:gap-6">
+            <div aria-label="Avatar avec initiales" className="grid h-20 w-20 shrink-0 place-items-center rounded-[22px] border border-white/20 bg-white/15 text-2xl font-semibold tracking-tight text-white sm:h-24 sm:w-24 sm:text-3xl">
+              {initiales(nom || utilisateur.username)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h2 className="break-words text-xl font-semibold tracking-tight sm:text-2xl">{nom || utilisateur.username}</h2>
+                <span className="rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-medium ring-1 ring-white/15">{utilisateur.role_libelle || 'Agent'}</span>
               </div>
-              <p className="pr-rise mt-2 text-[15px] leading-snug text-white/75" style={delai(260)}>
-                {corpsGrade}
-                <br />
-                Immatricule&nbsp;: {personnel.im}
-              </p>
-              {personnel.statut && (
-                <span
-                  className="pr-rise mt-3 inline-flex h-9 items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 text-[13px] font-medium text-white"
-                  style={delai(320)}
-                >
-                  {personnel.statut}
-                </span>
-              )}
-            </div>
-
-            <div className="grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4 md:gap-5">
-              <Stat libelle="Direction" valeur={personnel.direction_libelle || 'Non renseignée'} retard={300} />
-              <Stat libelle="Service" valeur={personnel.service_libelle || 'Non renseigné'} retard={370} />
-              <Stat libelle="Corps / Grade" valeur={corpsGrade} retard={440} />
+              <p className="mt-1 text-sm text-white/75">{personnel.grade || personnel.corps || 'Personnel MEN'}</p>
+              <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-white/80 sm:text-sm">
+                <span><span className="text-white/55">IM</span> <strong className="ml-1 font-semibold text-white">{personnel.im || '—'}</strong></span>
+                <span className="min-w-0 break-words"><span className="text-white/55">Service</span> <strong className="ml-1 font-semibold text-white">{personnel.service_libelle || '—'}</strong></span>
+              </div>
             </div>
           </div>
-        </header>
-      </div>
-      </div>
+        </section>
 
-      <div className="relative px-5 pb-2 sm:px-8">
-
-        {/* ---- ONGLETS ---- */}
-        <div className="pr-rise relative mt-9" style={delai(480)}>
-          <span aria-hidden="true" className="pr-line absolute inset-x-0 bottom-0 h-px bg-[#E5E5EA]" />
-          <div role="tablist" aria-label="Sections du profil" className="relative inline-flex">
-            {ONGLETS.map((o) => {
-              const actif = o.id === ongletActif
-              return (
-                <button
-                  key={o.id}
-                  ref={(el) => {
-                    refsOnglets.current[o.id] = el
-                  }}
-                  id={`onglet-${o.id}`}
-                  role="tab"
-                  type="button"
-                  aria-selected={actif}
-                  aria-controls={`panneau-${o.id}`}
-                  tabIndex={actif ? 0 : -1}
-                  onClick={() => setOngletActif(o.id)}
-                  onKeyDown={surTouche}
-                  className={`relative px-4 py-3 text-sm transition-colors duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#477B68]/30 ${
-                    actif ? 'font-semibold text-[#0A0A0A]' : 'font-medium text-[#555] hover:text-[#0A0A0A]'
-                  }`}
-                >
-                  {o.libelle}
-                </button>
-              )
-            })}
-            <span
-              aria-hidden="true"
-              className="absolute -bottom-px left-0 h-[2px] bg-[#0A0A0A] transition-transform duration-300 ease-[cubic-bezier(.22,1,.36,1)]"
-              style={{
-                width: `${100 / ONGLETS.length}%`,
-                transform: `translateX(${indexActif * 100}%)`,
-              }}
-            />
+        <section className="grid gap-3 sm:grid-cols-3" aria-label="Aperçu du profil">
+          <div className="rounded-2xl border border-slate-200/80 bg-white px-5 py-4">
+            <p className="text-xs font-medium text-slate-500">Direction</p>
+            <p className="mt-1 break-words text-sm font-semibold text-slate-900">{personnel.direction_libelle || '—'}</p>
           </div>
-        </div>
+          <div className="rounded-2xl border border-slate-200/80 bg-white px-5 py-4">
+            <p className="text-xs font-medium text-slate-500">Statut</p>
+            <p className="mt-1 break-words text-sm font-semibold text-slate-900">{personnel.statut || '—'}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200/80 bg-white px-5 py-4">
+            <p className="text-xs font-medium text-slate-500">Corps</p>
+            <p className="mt-1 break-words text-sm font-semibold text-slate-900">{personnel.corps || '—'}</p>
+          </div>
+        </section>
 
-        {/* ---- INFOS PERSONNELLES EN BAS ---- */}
-        <div className="mt-6 pb-12">
-          {ongletActif === 'infos' && (
-            <div
-              key="infos"
-              id="panneau-infos"
-              role="tabpanel"
-              aria-labelledby="onglet-infos"
-              className="pr-panel grid items-start gap-6 md:grid-cols-2 lg:grid-cols-3"
-            >
-              <Section titre="Informations personnelles" description="État civil de l’agent" teinte="bleu">
-                <Ligne libelle="Nom" valeur={personnel.nom} retard={40} />
-                <Ligne libelle="Prénoms" valeur={personnel.prenoms} retard={90} />
-                <Ligne libelle="Matricule (IM)" valeur={personnel.im} retard={140} />
-                <Ligne libelle="CIN" valeur={personnel.cin} retard={190} />
-                <Ligne libelle="Sexe" valeur={personnel.sexe} retard={240} />
-                <Ligne libelle="Date de naissance" valeur={dateLisible(personnel.date_naissance)} retard={290} />
-              </Section>
-
-              <Section titre="Coordonnées" description="Téléphone et e-mail" teinte="gris" retard={80}>
-                <Ligne libelle="Téléphone" valeur={personnel.telephone} retard={120} />
-                <Ligne libelle="E-mail" valeur={personnel.email || utilisateur.email} retard={170} />
-              </Section>
-
-              <Section titre="Compte" description="Accès à la plateforme" teinte="vert" retard={160}>
-                <Ligne libelle="Identifiant" valeur={utilisateur.username} retard={200} />
-                <Ligne libelle="Dernière connexion" valeur={dateLisible(utilisateur.last_login)} retard={250} />
-              </Section>
+        <div>
+          <div role="tablist" aria-label="Détails du profil" className="flex gap-1 overflow-x-auto border-b border-slate-200">
+            {ONGLETS.map(({ id, titre }) => (
+              <button
+                key={id}
+                ref={(element) => { boutons.current[id] = element }}
+                id={`profil-onglet-${id}`}
+                type="button"
+                role="tab"
+                aria-selected={onglet === id}
+                aria-controls={`profil-panneau-${id}`}
+                tabIndex={onglet === id ? 0 : -1}
+                onClick={() => setOnglet(id)}
+                onKeyDown={touchesOnglets}
+                className={`shrink-0 border-b-2 px-4 py-3 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-blue-600 ${onglet === id ? 'border-[#1B1BFF] text-[#1B1BFF]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+              >{titre}</button>
+            ))}
+          </div>
+          {onglet === 'personnel' ? (
+            <div key="personnel" id="profil-panneau-personnel" role="tabpanel" aria-labelledby="profil-onglet-personnel" className="mt-5 grid items-start gap-4 md:grid-cols-2">
+              <Panneau titre="Identité">
+                <Champ titre="Nom" valeur={personnel.nom} />
+                <Champ titre="Prénoms" valeur={personnel.prenoms} />
+                <Champ titre="CIN" valeur={personnel.cin} />
+                <Champ titre="Sexe" valeur={personnel.sexe} />
+                <Champ titre="Naissance" valeur={dateLisible(personnel.date_naissance)} />
+              </Panneau>
+              <div className="grid gap-4">
+                <Panneau titre="Contact">
+                  <Champ titre="Téléphone" valeur={personnel.telephone} />
+                  <Champ titre="E-mail" valeur={personnel.email || utilisateur.email} />
+                </Panneau>
+                <Panneau titre="Compte">
+                  <Champ titre="Identifiant" valeur={utilisateur.username} />
+                  <Champ titre="Dernière connexion" valeur={dateLisible(utilisateur.last_login)} />
+                </Panneau>
+              </div>
             </div>
-          )}
-
-          {ongletActif === 'pro' && (
-            <div
-              key="pro"
-              id="panneau-pro"
-              role="tabpanel"
-              aria-labelledby="onglet-pro"
-              className="pr-panel grid items-start gap-6 md:grid-cols-2 lg:grid-cols-3"
-            >
-              <Section titre="Affectation" description="Direction et service" teinte="bleu">
-                <Ligne libelle="Direction" valeur={personnel.direction_libelle} retard={40} />
-                <Ligne libelle="Service" valeur={personnel.service_libelle} retard={90} />
-              </Section>
-
-              <Section titre="Carrière" description="Corps et grade" teinte="gris" retard={80}>
-                <Ligne libelle="Corps" valeur={personnel.corps} retard={120} />
-                <Ligne libelle="Grade" valeur={personnel.grade} retard={170} />
-              </Section>
-
-              <Section titre="Situation" description="Statut et matricule" teinte="vert" retard={160}>
-                <Ligne libelle="Statut" valeur={personnel.statut} retard={200} />
-                <Ligne libelle="Matricule (IM)" valeur={personnel.im} retard={250} />
-              </Section>
+          ) : (
+            <div key="professionnel" id="profil-panneau-professionnel" role="tabpanel" aria-labelledby="profil-onglet-professionnel" className="mt-5 grid items-start gap-4 md:grid-cols-2">
+              <Panneau titre="Affectation">
+                <Champ titre="Direction" valeur={personnel.direction_libelle} />
+                <Champ titre="Service" valeur={personnel.service_libelle} />
+                <Champ titre="IM" valeur={personnel.im} />
+              </Panneau>
+              <Panneau titre="Carrière">
+                <Champ titre="Corps" valeur={personnel.corps} />
+                <Champ titre="Grade" valeur={personnel.grade} />
+                <Champ titre="Statut" valeur={personnel.statut} />
+              </Panneau>
             </div>
           )}
         </div>
       </div>
-      </div>
-    </div>
+    </main>
   )
 }
 

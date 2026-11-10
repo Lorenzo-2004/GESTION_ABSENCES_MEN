@@ -77,41 +77,23 @@ export interface FiltresDemandes {
   statut?: StatutDemande | ''
 }
 
-/**
- * Liste toutes les demandes ayant reçu le visa du chef de service.
- * La RH dispose d'un périmètre ministériel ; l'API renvoie donc les demandes
- * de tous les services, en respectant sa pagination standard.
- */
-export async function listerDemandesValideesParService(): Promise<DemandeConge[]> {
-  const taille = 200
+/** Liste les formulaires après visa, uniquement dans le périmètre du chef connecté. */
+export async function listerFormulairesDeMonService(): Promise<DemandeConge[]> {
   const toutes: DemandeConge[] = []
   let page = 1
   let nombrePages = 1
-
   do {
     const { data } = await api.get<ReponsePagineeDemandes | DemandeConge[]>(
-      '/demandes/',
-      {
-        params: {
-          page,
-          taille,
-          statut_demande: 'APPROUVE_CS',
-          ordering: '-date_creation',
-        },
-      },
+      '/demandes/formulaires-service/', { params: { page, taille: 200 } },
     )
-
     if (Array.isArray(data)) {
       toutes.push(...data)
       break
     }
-
-    const resultats = Array.isArray(data.resultats) ? data.resultats : []
-    toutes.push(...resultats)
+    toutes.push(...(data.resultats ?? []))
     nombrePages = Math.max(1, data.nombre_pages ?? 1)
     page += 1
   } while (page <= nombrePages)
-
   return toutes
 }
 

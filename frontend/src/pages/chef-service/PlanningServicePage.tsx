@@ -18,11 +18,12 @@ import { messageErreurUtilisateur } from '../../lib/messages'
 import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
 
 const TITRES_VUES: Record<VueService, { titre: string; description: string }> = {
-  apercu: { titre: "Vue d'ensemble", description: 'Suivi global des demandes et du service' },
-  demandes: { titre: 'Demandes à examiner', description: 'Demandes en attente de visa' },
-  personnels: { titre: 'Mon équipe', description: 'Agents rattachés à votre service' },
-  planning: { titre: 'Planning', description: 'Vue mensuelle des absences' },
-  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Déposer une demande personnelle' },
+  apercu: { titre: "Vue d'ensemble", description: 'Activité du service' },
+  demandes: { titre: 'Demandes à examiner', description: 'À valider' },
+  personnels: { titre: 'Mon équipe', description: 'Agents du service' },
+  formulaires: { titre: 'PDF officiels à signer', description: 'Classement par service' },
+  planning: { titre: 'Planning', description: 'Absences du mois' },
+  'nouvelle-demande': { titre: 'Nouvelle demande', description: 'Créer une demande' },
 }
 
 /* ------------------------------------------------------------------ */

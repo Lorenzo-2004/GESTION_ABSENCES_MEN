@@ -13,6 +13,7 @@ import { HistoriqueCongesPage } from './pages/agent/HistoriqueCongesPage'
 
 import { DashboardChefServicePage } from './pages/chef-service/DashboardChefServicePage'
 import { PlanningServicePage } from './pages/chef-service/PlanningServicePage'
+import { FormulairesServicePage } from './pages/chef-service/FormulairesServicePage'
 import { PersonnelsServicePage } from './pages/chef-service/PersonnelsServicePage'
 
 import { AdminComptesPage } from './pages/admin/AdminComptesPage'
@@ -190,6 +191,11 @@ function App() {
             <DashboardChefServicePage />
           </ProtectedRoute>
         }
+      />
+
+      <Route
+        path="/app/chef-service/formulaires"
+        element={<ProtectedRoute><FormulairesServicePage /></ProtectedRoute>}
       />
 
       <Route

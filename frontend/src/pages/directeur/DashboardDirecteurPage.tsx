@@ -26,8 +26,8 @@ import { messageErreurUtilisateur } from '../../lib/messages'
 import { nomAffichageUtilisateur } from '../../lib/nomAffichageUtilisateur'
 
 const TITRES_VUES: Record<VueDirecteur, { titre: string; description: string }> = {
-  apercu: { titre: 'Vue d’ensemble', description: 'Suivi des validations de la direction' },
-  demandes: { titre: 'Décisions à rendre', description: 'Demandes qui attendent votre avis définitif' },
+  apercu: { titre: 'Vue d’ensemble', description: 'Suivi des validations' },
+  demandes: { titre: 'Décisions à rendre', description: 'À traiter' },
 }
 
 /* ------------------------------------------------------------------ */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type {
   CSSProperties,
   DragEvent,
@@ -8,13 +8,6 @@ import type {
 } from 'react'
 import { Link, Navigate } from 'react-router'
 import { useAuth } from '../../contexts/useAuth'
-import {
-  listerDemandesValideesParService,
-  recupererFormulaireOfficiel,
-  verifierIntegriteFormulaire,
-  type DemandeConge,
-  typePossedeFicheOfficielle,
-} from '../../services/congesService'
 import {
   activerDecision,
   creerDecision,
@@ -133,11 +126,10 @@ const zoneTexte =
   'min-h-[100px] w-full resize-y rounded-xl border border-[#E5E5EA] bg-white px-3.5 py-2.5 text-sm text-[#0A0A0A] outline-none transition duration-200 placeholder:text-[#52525B] hover:border-[#E5E5EA] focus:border-[#1B1BFF]/25 focus:ring-4 focus:ring-[#1B1BFF]/15'
 
 const TITRES_VUES: Record<VueRH, { titre: string; description: string }> = {
-  apercu: { titre: 'Vue d’ensemble', description: 'Suivi des décisions et des droits à congé' },
-  decisions: { titre: 'Décisions', description: 'Consulter, rechercher et activer les soldes' },
-  formulaires: { titre: 'Formulaires officiels', description: 'Demandes visées par service — PDF à imprimer pour les signatures manuscrites' },
-  reports: { titre: 'Report des reliquats', description: 'Reporter les soldes d’une année vers la suivante' },
-  'demande-agent': { titre: 'Demande pour un agent', description: 'Préparer une demande pour un agent du ministère' },
+  apercu: { titre: 'Vue d’ensemble', description: 'Décisions et soldes' },
+  decisions: { titre: 'Décisions', description: 'Gestion des décisions' },
+  reports: { titre: 'Report des reliquats', description: 'Soldes à reporter' },
+  'demande-agent': { titre: 'Demande pour un agent', description: 'Saisie pour un agent' },
 }
 
 /* ------------------------------------------------------------------ */
@@ -285,62 +277,6 @@ function nomPersonnel(personnel?: PersonnelDecision): string {
     personnel.nom_complet ||
     [personnel.nom, personnel.prenoms].filter(Boolean).join(' ') ||
     `IM ${personnel.im}`
-  )
-}
-
-function dateCourteDemande(valeur?: string | null): string {
-  if (!valeur) return '—'
-  const date = new Date(`${valeur.slice(0, 10)}T12:00:00`)
-  if (Number.isNaN(date.getTime())) return '—'
-  return new Intl.DateTimeFormat('fr-FR', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  }).format(date)
-}
-
-function nomAgentDemande(demande: DemandeConge): string {
-  const personnel = demande.personnel_detail
-  return personnel?.nom_complet
-    || [personnel?.nom, personnel?.prenoms].filter(Boolean).join(' ')
-    || `Agent #${demande.personnel}`
-}
-
-function cleServiceDemande(demande: DemandeConge): string {
-  const personnel = demande.personnel_detail
-  const direction = personnel?.direction ?? 'sans-direction'
-  return personnel?.service != null
-    ? `direction-${direction}-service-${personnel.service}`
-    : `direction-${direction}-sans-service`
-}
-
-interface GroupeDemandesService {
-  cle: string
-  service: string
-  direction: string
-  demandes: DemandeConge[]
-}
-
-function regrouperDemandesParService(demandes: DemandeConge[]): GroupeDemandesService[] {
-  const groupes = new Map<string, GroupeDemandesService>()
-
-  for (const demande of demandes) {
-    const cle = cleServiceDemande(demande)
-    const personnel = demande.personnel_detail
-    const service = personnel?.service_libelle?.trim() || 'Service non renseigné'
-    const direction = personnel?.direction_libelle?.trim() || 'Direction non renseignée'
-    const groupe = groupes.get(cle) ?? {
-      cle,
-      service,
-      direction,
-      demandes: [],
-    }
-    groupe.demandes.push(demande)
-    groupes.set(cle, groupe)
-  }
-
-  return [...groupes.values()].sort((a, b) =>
-    `${a.direction} ${a.service}`.localeCompare(`${b.direction} ${b.service}`, 'fr'),
   )
 }
 
@@ -595,7 +531,6 @@ export function DecisionsRHPage() {
 
   const [decisions, setDecisions] = useState<DecisionConge[]>([])
   const [toutesDecisions, setToutesDecisions] = useState<DecisionConge[]>([])
-  const [demandesValideesService, setDemandesValideesService] = useState<DemandeConge[]>([])
   const [personnels, setPersonnels] = useState<PersonnelDecision[]>([])
   const [formulaire, setFormulaire] = useState<FormulaireDecision>(formulaireInitial)
 
@@ -608,19 +543,15 @@ export function DecisionsRHPage() {
 
   const [chargementListe, setChargementListe] = useState(true)
   const [chargementStats, setChargementStats] = useState(true)
-  const [chargementFormulaires, setChargementFormulaires] = useState(false)
   const [chargementScan, setChargementScan] = useState(false)
   const [enregistrement, setEnregistrement] = useState(false)
   const [actionEnCours, setActionEnCours] = useState<number | null>(null)
-  const [formulaireEnTelechargement, setFormulaireEnTelechargement] = useState<number | null>(null)
   const [reportEnCours, setReportEnCours] = useState(false)
 
   const [anneeSource, setAnneeSource] = useState(String(new Date().getFullYear() - 1))
   const [erreur, setErreur] = useState('')
   const [succes, setSucces] = useState('')
   const [confirmation, setConfirmation] = useState<ConfirmationRH | null>(null)
-  const [rechercheFormulaires, setRechercheFormulaires] = useState('')
-  const [serviceFiltreFormulaires, setServiceFiltreFormulaires] = useState('')
 
   const total = toutesDecisions.length
   const nombreValides = toutesDecisions.filter((d) => d.est_valide).length
@@ -636,40 +567,6 @@ export function DecisionsRHPage() {
   const affValides = useCompteur(valeurStat(nombreValides))
   const affAVerifier = useCompteur(valeurStat(nombreAVerifier))
   const affPourcentage = useCompteur(valeurStat(pourcentage))
-
-  const groupesTousServices = useMemo(
-    () => regrouperDemandesParService(demandesValideesService),
-    [demandesValideesService],
-  )
-  const demandesFormulairesFiltrees = useMemo(() => {
-    const recherche = rechercheFormulaires.trim().toLocaleLowerCase('fr-FR')
-    return demandesValideesService.filter((demande) => {
-      if (serviceFiltreFormulaires && cleServiceDemande(demande) !== serviceFiltreFormulaires) {
-        return false
-      }
-      if (!recherche) return true
-      const personnel = demande.personnel_detail
-      const texte = [
-        demande.numero_enregistrement,
-        demande.type_absence_libelle,
-        demande.motif,
-        personnel?.im,
-        personnel?.nom,
-        personnel?.prenoms,
-        personnel?.nom_complet,
-        personnel?.service_libelle,
-        personnel?.direction_libelle,
-      ].filter(Boolean).join(' ').toLocaleLowerCase('fr-FR')
-      return texte.includes(recherche)
-    })
-  }, [demandesValideesService, rechercheFormulaires, serviceFiltreFormulaires])
-  const groupesFormulairesFiltres = useMemo(
-    () => regrouperDemandesParService(demandesFormulairesFiltrees),
-    [demandesFormulairesFiltrees],
-  )
-  const nombrePDFDisponibles = demandesValideesService.filter(
-    (demande) => typePossedeFicheOfficielle(demande.type_absence),
-  ).length
 
   async function chargerDecisions(recherche = rechercheDecision, statut = filtre) {
     setChargementListe(true)
@@ -699,7 +596,6 @@ export function DecisionsRHPage() {
     await Promise.all([
       chargerDecisions(),
       chargerStatistiques(),
-      ...(vue === 'formulaires' ? [chargerFormulairesParService()] : []),
     ])
   }
 
@@ -712,80 +608,12 @@ export function DecisionsRHPage() {
     }
   }
 
-  async function chargerFormulairesParService() {
-    setChargementFormulaires(true)
-    try {
-      const resultat = await listerDemandesValideesParService()
-      setDemandesValideesService(resultat)
-      setErreur('')
-    } catch (e) {
-      setErreur(`Impossible de charger les demandes visées par service. ${messageErreur(e)}`)
-    } finally {
-      setChargementFormulaires(false)
-    }
-  }
-
-  async function telechargerFormulaireOfficiel(demande: DemandeConge) {
-    if (demande.statut_demande !== 'APPROUVE_CS') {
-      setErreur('Le formulaire est disponible dans cette rubrique uniquement après le visa du chef de service.')
-      return
-    }
-    if (!typePossedeFicheOfficielle(demande.type_absence)) {
-      setErreur('Aucune fiche PDF officielle n’est prévue pour ce type de demande.')
-      return
-    }
-
-    setFormulaireEnTelechargement(demande.id_demande)
-    setErreur('')
-    setSucces('')
-    try {
-      const fichier = await recupererFormulaireOfficiel(demande.id_demande)
-      const debutFichier = await fichier.slice(0, 5).text()
-      if (debutFichier !== '%PDF-') {
-        throw new Error('Le serveur n’a pas renvoyé un PDF officiel valide.')
-      }
-
-      const integrite = await verifierIntegriteFormulaire(demande.id_demande)
-      if (
-        integrite.integrite_globale !== true
-        || integrite.document_integrite !== true
-        || integrite.journal_integrite !== true
-        || integrite.signature_integrite === false
-      ) {
-        throw new Error('Le contrôle d’intégrité du formulaire a échoué. Ne transmettez pas ce document pour signature.')
-      }
-
-      const url = URL.createObjectURL(new Blob([fichier], { type: 'application/pdf' }))
-      const lien = document.createElement('a')
-      const reference = (demande.numero_enregistrement || `demande-${demande.id_demande}`)
-        .replace(/[^a-zA-Z0-9._-]+/g, '_')
-      lien.href = url
-      lien.download = `Formulaire-officiel-${reference}.pdf`
-      document.body.appendChild(lien)
-      lien.click()
-      lien.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 1500)
-      setSucces(`Formulaire officiel de ${nomAgentDemande(demande)} téléchargé après vérification de son intégrité.`)
-    } catch (e) {
-      setErreur(`Téléchargement du formulaire impossible. ${messageErreur(e)}`)
-    } finally {
-      setFormulaireEnTelechargement(null)
-    }
-  }
-
   useEffect(() => {
     void chargerDecisions('', 'toutes')
     void chargerStatistiques()
     void chargerPersonnels('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  useEffect(() => {
-    if (vue === 'formulaires' && demandesValideesService.length === 0) {
-      void chargerFormulairesParService()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vue])
 
   if (chargement) {
     return (
@@ -1162,7 +990,7 @@ export function DecisionsRHPage() {
     <CoquilleRH
       vue={vue}
       onVue={setVue}
-      badges={{ decisions: nombreAVerifier, formulaires: nombrePDFDisponibles }}
+      badges={{ decisions: nombreAVerifier }}
       titre={TITRES_VUES[vue].titre}
       description={TITRES_VUES[vue].description}
       actions={
@@ -1176,8 +1004,8 @@ export function DecisionsRHPage() {
               </span>
             </Link>
           )}
-          <button type="button" onClick={() => void actualiser()} disabled={chargementListe || chargementStats || (vue === 'formulaires' && chargementFormulaires)} aria-label="Actualiser" title="Actualiser" className={`${btnContour} !px-3 !h-9`}>
-            <Icon name="refresh" className={`h-4 w-4 ${chargementListe || chargementFormulaires ? 'animate-spin' : ''}`} />
+          <button type="button" onClick={() => void actualiser()} disabled={chargementListe || chargementStats} aria-label="Actualiser" title="Actualiser" className={`${btnContour} !px-3 !h-9`}>
+            <Icon name="refresh" className={`h-4 w-4 ${chargementListe ? 'animate-spin' : ''}`} />
           </button>
           <button type="button" onClick={() => ouvrirTiroir('scan')} className={`${btnContour} !h-9`}>
             <Icon name="upload" className="h-4 w-4" />
@@ -1395,183 +1223,6 @@ export function DecisionsRHPage() {
       )}
 
       {/* ======================= FORMULAIRES OFFICIELS ======================= */}
-      {vue === 'formulaires' && (
-        <div className="min-w-0 space-y-4 rounded-[32px] border border-[#E5E5EA] bg-white p-3 sm:p-4">
-          <section className="rh-in rounded-[24px] bg-[#D0D0D9] p-5 sm:p-6" style={delai(0)}>
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex min-w-0 items-start gap-4">
-                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-white text-[#1B1BFF]">
-                  <Icon name="file" className="h-6 w-6" />
-                </span>
-                <div className="min-w-0">
-                  <h2 className="men-serif text-2xl text-[#0A0A0A]">Documents à faire signer</h2>
-                  <p className="mt-1 max-w-3xl text-sm leading-relaxed text-[#424249]">
-                    Les demandes sont regroupées par service après le visa favorable du chef de service.
-                    Téléchargez le formulaire officiel prérempli pour l’imprimer et recueillir les signatures manuscrites requises.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => void chargerFormulairesParService()}
-                disabled={chargementFormulaires}
-                className={`${btnContour} shrink-0`}
-              >
-                <Icon name="refresh" className={`h-4 w-4 ${chargementFormulaires ? 'animate-spin' : ''}`} />
-                Actualiser
-              </button>
-            </div>
-            <div className="mt-5 grid gap-2 sm:grid-cols-3">
-              <div className="rounded-2xl bg-white p-4">
-                <p className="text-xs font-medium text-[#52525B]">Demandes visées par service</p>
-                <p className="men-serif mt-1 text-3xl tabular-nums text-[#0A0A0A]">
-                  {chargementFormulaires ? '—' : demandesValideesService.length}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-white p-4">
-                <p className="text-xs font-medium text-[#52525B]">Formulaires PDF disponibles</p>
-                <p className="men-serif mt-1 text-3xl tabular-nums text-[#1B1BFF]">
-                  {chargementFormulaires ? '—' : nombrePDFDisponibles}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-white p-4">
-                <p className="text-xs font-medium text-[#52525B]">Services concernés</p>
-                <p className="men-serif mt-1 text-3xl tabular-nums text-[#0A0A0A]">
-                  {chargementFormulaires ? '—' : groupesTousServices.length}
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <div className="rounded-[24px] bg-[#C2C2CC] p-3 sm:p-4">
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,.45fr)]">
-              <label className="group relative min-w-0">
-                <span className="sr-only">Rechercher une demande ou un agent</span>
-                <Icon name="search" className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#52525B]" />
-                <input
-                  type="search"
-                  value={rechercheFormulaires}
-                  onChange={(e) => setRechercheFormulaires(e.target.value)}
-                  placeholder="Rechercher un agent, un IM, un numéro ou un type…"
-                  className="h-12 w-full rounded-full border border-[#E5E5EA] bg-white pl-11 pr-4 text-sm text-[#0A0A0A] outline-none transition focus:border-[#1B1BFF] focus:ring-4 focus:ring-[#1B1BFF]/15"
-                />
-              </label>
-              <label className="min-w-0">
-                <span className="sr-only">Filtrer par service</span>
-                <select
-                  value={serviceFiltreFormulaires}
-                  onChange={(e) => setServiceFiltreFormulaires(e.target.value)}
-                  className="h-12 w-full rounded-full border border-[#E5E5EA] bg-white px-4 text-sm text-[#0A0A0A] outline-none transition focus:border-[#1B1BFF] focus:ring-4 focus:ring-[#1B1BFF]/15"
-                >
-                  <option value="">Tous les services</option>
-                  {groupesTousServices.map((groupe) => (
-                    <option key={groupe.cle} value={groupe.cle}>
-                      {groupe.service} — {groupe.direction}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-[#424249]">
-              <span>Statut affiché : <strong className="font-semibold text-[#0A0A0A]">Approuvée par le chef de service</strong></span>
-              <span>{demandesFormulairesFiltrees.length} demande{demandesFormulairesFiltrees.length > 1 ? 's' : ''} affichée{demandesFormulairesFiltrees.length > 1 ? 's' : ''}</span>
-            </div>
-          </div>
-
-          {chargementFormulaires ? (
-            <div className="rounded-[24px] border border-[#E5E5EA] bg-white px-6 py-16 text-center">
-              <Icon name="loader" className="mx-auto h-7 w-7 animate-spin text-[#1B1BFF]" />
-              <p className="mt-3 text-sm text-[#52525B]">Chargement des demandes de tous les services…</p>
-            </div>
-          ) : groupesFormulairesFiltres.length === 0 ? (
-            <div className="rounded-[24px] border border-[#E5E5EA] bg-white px-6 py-16 text-center">
-              <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-[#1B1BFF]/10 text-[#1B1BFF]">
-                <Icon name="file" className="h-6 w-6" />
-              </span>
-              <p className="men-serif mt-4 text-xl text-[#0A0A0A]">Aucune demande à classer</p>
-              <p className="mt-1 text-sm text-[#52525B]">
-                Aucune demande ne correspond à la recherche. Les demandes apparaîtront ici après le visa favorable du chef de service.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {groupesFormulairesFiltres.map((groupe, index) => (
-                <section
-                  key={groupe.cle}
-                  className="rh-in overflow-hidden rounded-[24px] border border-[#B4B4BF] bg-[#C2C2CC] p-2 sm:p-3"
-                  style={delai(Math.min(index, 8) * 45)}
-                >
-                  <header className="flex flex-col gap-2 rounded-2xl bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#1B1BFF]/10 text-[#1B1BFF]">
-                        <Icon name="building" className="h-5 w-5" />
-                      </span>
-                      <div className="min-w-0">
-                        <h3 className="truncate text-base font-semibold text-[#0A0A0A]">{groupe.service}</h3>
-                        <p className="truncate text-xs text-[#52525B]">{groupe.direction}</p>
-                      </div>
-                    </div>
-                    <span className="inline-flex w-fit items-center rounded-full bg-[#1B1BFF]/10 px-3 py-1 text-xs font-semibold text-[#1B1BFF]">
-                      {groupe.demandes.length} demande{groupe.demandes.length > 1 ? 's' : ''}
-                    </span>
-                  </header>
-
-                  <ul className="mt-2 space-y-2">
-                    {groupe.demandes.map((demande) => {
-                      const pdfDisponible = typePossedeFicheOfficielle(demande.type_absence)
-                      const enTelechargement = formulaireEnTelechargement === demande.id_demande
-                      return (
-                        <li key={demande.id_demande} className="flex min-w-0 flex-col gap-3 rounded-2xl bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
-                          <div className="flex min-w-0 flex-1 items-start gap-3">
-                            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#C2C2CC] text-[#0A0A0A]">
-                              <Icon name="user" className="h-5 w-5" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                <p className="truncate text-sm font-semibold text-[#0A0A0A]">{nomAgentDemande(demande)}</p>
-                                <span className="text-xs text-[#52525B]">IM : {demande.personnel_detail?.im || '—'}</span>
-                              </div>
-                              <p className="mt-0.5 text-xs text-[#52525B]">
-                                {demande.numero_enregistrement || `Demande #${demande.id_demande}`}
-                                {' · '}{demande.type_absence_libelle}
-                              </p>
-                              <p className="mt-1 text-xs text-[#424249]">
-                                Du {dateCourteDemande(demande.date_debut)} au {dateCourteDemande(demande.date_fin)}
-                                {' · '}{demande.nombre_jours} jour{demande.nombre_jours > 1 ? 's' : ''}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
-                            {pdfDisponible ? (
-                              <button
-                                type="button"
-                                onClick={() => void telechargerFormulaireOfficiel(demande)}
-                                disabled={formulaireEnTelechargement !== null}
-                                className={`${btnPrimaire} w-full sm:w-auto`}
-                              >
-                                <Icon name={enTelechargement ? 'loader' : 'file'} className={`h-4 w-4 ${enTelechargement ? 'animate-spin' : ''}`} />
-                                {enTelechargement ? 'Préparation…' : 'Télécharger le PDF officiel'}
-                              </button>
-                            ) : (
-                              <span className="inline-flex min-h-10 items-center justify-center rounded-xl bg-[#C2C2CC]/60 px-3 text-center text-xs font-medium text-[#52525B]">
-                                Pas de formulaire PDF officiel pour ce type
-                              </span>
-                            )}
-                          </div>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </section>
-              ))}
-            </div>
-          )}
-          <p className="px-1 text-xs leading-relaxed text-[#52525B]">
-            Les formulaires officiels sont préremplis par le système. Le téléchargement est précédé d’un contrôle d’intégrité du PDF et de son journal. Les fiches PDF sont prévues pour le congé annuel, la permission et l’autorisation d’absence ; les autres types restent consultables mais ne produisent pas de fiche officielle.
-          </p>
-        </div>
-      )}
-
       {/* ================================ DÉCISIONS ================================ */}
       {vue === 'decisions' && (
         <div className="min-w-0 rounded-[32px] border border-[#E5E5EA] bg-white p-3 sm:p-4">

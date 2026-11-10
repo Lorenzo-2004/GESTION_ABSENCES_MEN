@@ -408,6 +408,34 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
             filename=demande.fichier_justificatif.name.rsplit("/", 1)[-1],
         )
 
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated],
+            url_path="formulaires-service")
+    def formulaires_service(self, request):
+        """Formulaires après visa, réservés au chef du service de chaque agent."""
+        from .enums import StatutDemande
+        from .regles import TYPES_AVEC_FORMULAIRE_OFFICIEL
+
+        if role_de(request.user) != Role.CHEF_SERVICE:
+            raise PermissionDenied("Les formulaires visés sont réservés au chef de service.")
+        chef = personnel_de(request.user)
+        if chef is None or chef.service_id is None:
+            raise PermissionDenied(MSG_SANS_SERVICE)
+
+        demandes = (
+            DemandeAbsence.objects.select_related("personnel", "personnel__direction", "personnel__service")
+            .filter(
+                personnel__service_id=chef.service_id,
+                personnel__direction_id=chef.direction_id,
+                statut_demande__in=[StatutDemande.APPROUVE_CS, StatutDemande.VALIDE_DIR, StatutDemande.ARCHIVEE],
+                type_absence__in=TYPES_AVEC_FORMULAIRE_OFFICIEL,
+            )
+            .order_by("-date_creation", "-pk")
+        )
+        page = self.paginate_queryset(demandes)
+        if page is not None:
+            return self.get_paginated_response(DemandeAbsenceSerializer(page, many=True).data)
+        return Response(DemandeAbsenceSerializer(demandes, many=True).data)
+
     @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated])
     def formulaire(self, request, pk=None):
         """Génère une copie officielle unique, la scelle et sert toujours les mêmes octets."""
@@ -421,6 +449,20 @@ class DemandeAbsenceViewSet(viewsets.ModelViewSet):
         from .models import TraceSignature
 
         demande_visible = self.get_object()  # applique d'abord le périmètre RBAC
+        # Après le visa, le document papier est placé sous la responsabilité du
+        # chef du service de l'agent. Ne pas laisser la RH contourner cette
+        # répartition en appelant directement /demandes/<id>/formulaire/.
+        from .enums import StatutDemande
+        if demande_visible.statut_demande in (StatutDemande.APPROUVE_CS, StatutDemande.VALIDE_DIR, StatutDemande.ARCHIVEE):
+            chef = personnel_de(request.user)
+            if (
+                role_de(request.user) != Role.CHEF_SERVICE
+                or chef is None
+                or chef.service_id is None
+                or chef.service_id != demande_visible.personnel.service_id
+                or chef.direction_id != demande_visible.personnel.direction_id
+            ):
+                raise PermissionDenied("Le formulaire après visa est réservé au chef du service de l'agent.")
         fichier_cree = None
         demande = demande_visible
         contenu_pdf = b""

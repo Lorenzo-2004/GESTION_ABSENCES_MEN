@@ -21,7 +21,7 @@ const LIBELLES_ROLES: Record<string, string> = {
   ROLE_ADMIN: 'Administrateur',
 }
 
-export type VueRH = 'apercu' | 'decisions' | 'formulaires' | 'reports' | 'demande-agent'
+export type VueRH = 'apercu' | 'decisions' | 'reports' | 'demande-agent'
 export type VueAgent =
   | 'apercu'
   | 'demandes'
@@ -34,6 +34,7 @@ export type VueService =
   | 'demandes'
   | 'personnels'
   | 'planning'
+  | 'formulaires'
   | 'nouvelle-demande'
 export type VueDirecteur = 'apercu' | 'demandes'
 export type VueAdmin = 'comptes'
@@ -411,7 +412,6 @@ function Coquille<V extends string>({
 
 const NAV_RH: ElementNav<VueRH>[] = [
   { cle: 'apercu', libelle: 'Vue d’ensemble RH', icone: 'building' },
-  { cle: 'formulaires', libelle: 'Formulaires officiels', icone: 'file' },
   { cle: 'decisions', libelle: 'Décisions RH', icone: 'file' },
   { cle: 'demande-agent', id: 'rh-demande-agent', libelle: 'Demande pour un agent', icone: 'plus', chemin: '/app/rh/nouvelle-demande' },
   { cle: 'reports', libelle: 'Report des reliquats', icone: 'refresh' },
@@ -437,6 +437,7 @@ const NAV_SERVICE: ElementNav<VueService>[] = [
   { cle: 'apercu', libelle: 'Vue d’ensemble', icone: 'building', chemin: '/app/chef-service' },
   { cle: 'personnels', libelle: 'Mon équipe', icone: 'users', chemin: '/app/chef-service/personnel' },
   { cle: 'planning', libelle: 'Planning du service', icone: 'calendar', chemin: '/app/chef-service/planning' },
+  { cle: 'formulaires', libelle: 'PDF officiels à signer', icone: 'file', chemin: '/app/chef-service/formulaires' },
   { cle: 'nouvelle-demande', libelle: 'Demande pour un agent', icone: 'plus', chemin: '/app/chef-service/nouvelle-demande' },
   { cle: 'apercu', id: 'service-agent-profil', libelle: 'Mon profil personnel', icone: 'user', chemin: '/app/agent/profil' },
   { cle: 'demandes', id: 'service-agent-demandes', libelle: 'Mes demandes', icone: 'file', chemin: '/app/agent/mes-demandes' },
